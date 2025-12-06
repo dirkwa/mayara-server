@@ -1,3 +1,30 @@
 .DS_Store
 /target
 demo/work
+
+# VS code
+.vscode/
+
+# Build files
+*.tgz
+*.log
+*.tmp
+
+# WASM build artifacts
+mayara-signalk-wasm/plugin.wasm
+
+# Node modules (if any)
+node_modules/
+
+# Cargo lock for library crates (optional - uncomment if desired)
+# mayara-core/Cargo.lock
+# mayara-lib/Cargo.lock
+
+# IDE
+*.swp
+*.swo
+*~
+.idea/
+
+# OS files
+Thumbs.db

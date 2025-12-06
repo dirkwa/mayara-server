@@ -1,0 +1,143 @@
+//! Radar data structures
+//!
+//! These structures represent radar metadata and configuration,
+//! independent of any I/O or networking code.
+
+use serde::{Deserialize, Serialize};
+use crate::Brand;
+
+/// Basic radar information discovered from beacon response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RadarDiscovery {
+    /// Radar brand
+    pub brand: Brand,
+    /// Radar model (if known)
+    pub model: Option<String>,
+    /// Radar name/serial from beacon
+    pub name: String,
+    /// IP address as string
+    pub address: String,
+    /// Port for data streaming
+    pub data_port: u16,
+    /// Port for commands/reports
+    pub command_port: u16,
+    /// Number of spokes per revolution
+    pub spokes_per_revolution: u16,
+    /// Maximum spoke length in pixels
+    pub max_spoke_len: u16,
+    /// Pixel depth (e.g., 16, 64, 128)
+    pub pixel_values: u8,
+}
+
+/// Legend entry for mapping pixel values to colors
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LegendEntry {
+    /// Pixel type (Normal, TargetBorder, DopplerApproaching, etc.)
+    #[serde(rename = "type")]
+    pub pixel_type: String,
+    /// RGBA color as hex string (e.g., "#00FF00FF")
+    pub color: String,
+}
+
+/// Radar control value
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlValue {
+    /// Current value
+    pub value: serde_json::Value,
+    /// Whether this control is enabled
+    #[serde(default)]
+    pub enabled: bool,
+    /// Whether this control is in auto mode
+    #[serde(default)]
+    pub auto: bool,
+}
+
+/// Radar control definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlDefinition {
+    /// Control name
+    pub name: String,
+    /// Control description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Minimum value
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    /// Maximum value
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    /// Step value
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<f64>,
+    /// Unit (e.g., "meters", "degrees")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    /// Whether this control supports auto mode
+    #[serde(default)]
+    pub has_auto: bool,
+}
+
+/// Full radar state including controls and legend
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RadarState {
+    /// Radar ID
+    pub id: String,
+    /// Radar name
+    pub name: String,
+    /// Brand
+    pub brand: Brand,
+    /// Model (if known)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Current status
+    pub status: RadarStatus,
+    /// Number of spokes per revolution
+    pub spokes_per_revolution: u16,
+    /// Maximum spoke length
+    pub max_spoke_len: u16,
+    /// Legend for pixel color mapping
+    pub legend: Vec<LegendEntry>,
+    /// Available controls with current values
+    pub controls: std::collections::HashMap<String, ControlValue>,
+    /// Optional external stream URL
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_url: Option<String>,
+}
+
+/// Radar operational status
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RadarStatus {
+    /// Radar is off
+    Off,
+    /// Radar is warming up
+    Warming,
+    /// Radar is in standby mode
+    Standby,
+    /// Radar is transmitting
+    Transmit,
+    /// Radar status unknown
+    Unknown,
+}
+
+impl Default for RadarStatus {
+    fn default() -> Self {
+        RadarStatus::Unknown
+    }
+}
+
+impl std::fmt::Display for RadarStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RadarStatus::Off => write!(f, "off"),
+            RadarStatus::Warming => write!(f, "warming"),
+            RadarStatus::Standby => write!(f, "standby"),
+            RadarStatus::Transmit => write!(f, "transmit"),
+            RadarStatus::Unknown => write!(f, "unknown"),
+        }
+    }
+}

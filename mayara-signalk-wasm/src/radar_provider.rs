@@ -1,0 +1,401 @@
+//! Radar Provider
+//!
+//! Implements the SignalK Radar Provider interface.
+
+use serde::Serialize;
+use std::collections::BTreeMap;
+
+use mayara_core::radar::RadarDiscovery;
+
+use crate::locator::RadarLocator;
+use crate::signalk_ffi::{debug, emit_json};
+use crate::spoke_receiver::SpokeReceiver;
+
+/// Sanitize a string to be safe for JSON and SignalK paths
+fn sanitize_string(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect()
+}
+
+/// Legend entry for PPI color mapping
+#[derive(Debug, Clone, Serialize)]
+pub struct LegendEntry {
+    pub color: String,
+}
+
+/// Radar state for SignalK API
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RadarState {
+    pub id: String,
+    pub name: String,
+    pub brand: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub status: String,
+    pub spokes_per_revolution: u16,
+    pub max_spoke_len: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub control_url: Option<String>,
+    pub controls: BTreeMap<String, serde_json::Value>,
+    pub legend: BTreeMap<String, LegendEntry>,
+}
+
+impl From<&RadarDiscovery> for RadarState {
+    fn from(d: &RadarDiscovery) -> Self {
+        let sanitized_name = sanitize_string(&d.name);
+        let brand_str = d.brand.as_str();
+        let id = format!("{}-{}", brand_str, sanitized_name);
+        let ip = d.address.split(':').next().unwrap_or(&d.address);
+
+        // Build default legend (256 entries)
+        // Color gradient: black -> yellow -> orange -> dark red -> bright red
+        let mut legend = BTreeMap::new();
+        for i in 0..256u16 {
+            let (r, g, b) = if i == 0 {
+                // Index 0: transparent/black background
+                (0u8, 0u8, 0u8)
+            } else if i < 64 {
+                // 1-63: black to yellow (increase R and G)
+                let t = (i * 4) as u8;
+                (t, t, 0)
+            } else if i < 128 {
+                // 64-127: yellow to orange (G decreases)
+                let t = ((128 - i) * 4) as u8;
+                (255, t, 0)
+            } else if i < 192 {
+                // 128-191: orange to dark red (R stays, G already 0)
+                let t = ((192 - i) * 4) as u8;
+                (128 + t / 2, 0, 0)
+            } else {
+                // 192-255: dark red to bright red
+                let t = ((i - 192) * 2) as u8;
+                (180 + t, t / 3, t / 4)
+            };
+            let color = format!("#{:02X}{:02X}{:02X}", r, g, b);
+            legend.insert(i.to_string(), LegendEntry { color });
+        }
+
+        // Build basic controls
+        let mut controls = BTreeMap::new();
+
+        // Control 0: Status (read-only, required by webapp)
+        controls.insert(
+            "0".to_string(),
+            serde_json::json!({
+                "name": "Status",
+                "isReadOnly": true
+            }),
+        );
+
+        // Control 1: Power on/off
+        controls.insert(
+            "1".to_string(),
+            serde_json::json!({
+                "name": "Power",
+                "validValues": [0, 1],
+                "descriptions": {
+                    "0": "Off",
+                    "1": "On"
+                }
+            }),
+        );
+
+        // Note: control_url is for mayara-server if running separately
+        // stream_url is omitted so clients use SignalK's built-in /radars/{id}/stream
+        let _ = ip; // Suppress unused warning
+
+        Self {
+            id: id.clone(),
+            name: sanitized_name.clone(),
+            brand: brand_str.to_string(),
+            model: d.model.clone().map(|m| sanitize_string(&m)),
+            status: "standby".to_string(),
+            spokes_per_revolution: d.spokes_per_revolution,
+            max_spoke_len: d.max_spoke_len,
+            // No external streamUrl - clients use SignalK's built-in /radars/{id}/stream
+            // Spokes are emitted via sk_radar_emit_spokes FFI
+            stream_url: None,
+            // No external controlUrl - use SignalK REST API for controls
+            control_url: None,
+            controls,
+            legend,
+        }
+    }
+}
+
+/// Radar Provider implementation
+pub struct RadarProvider {
+    locator: RadarLocator,
+    spoke_receiver: SpokeReceiver,
+    poll_count: u64,
+}
+
+impl RadarProvider {
+    /// Create a new radar provider
+    pub fn new() -> Self {
+        let mut locator = RadarLocator::new();
+        locator.start();
+
+        Self {
+            locator,
+            spoke_receiver: SpokeReceiver::new(),
+            poll_count: 0,
+        }
+    }
+
+    /// Poll for radar events
+    pub fn poll(&mut self) -> i32 {
+        self.poll_count += 1;
+
+        // Update timestamp (in a real implementation, get from host)
+        self.locator.current_time_ms = self.poll_count * 100;
+
+        // Poll for new radars
+        let new_radars = self.locator.poll();
+
+        // Emit delta for each new radar
+        for discovery in &new_radars {
+            self.emit_radar_discovered(discovery);
+        }
+
+        // Register ALL Furuno radars for spoke tracking (not just new ones)
+        // This ensures radars discovered before spoke_receiver was ready are also tracked
+        let radar_count = self.locator.radars.len();
+        if self.poll_count % 100 == 1 {
+            debug(&format!("Checking {} radars for spoke tracking", radar_count));
+        }
+
+        for radar_info in self.locator.radars.values() {
+            if self.poll_count % 100 == 1 {
+                debug(&format!("Radar: {} brand={:?}", radar_info.discovery.name, radar_info.discovery.brand));
+            }
+            if radar_info.discovery.brand == mayara_core::Brand::Furuno {
+                let state = RadarState::from(&radar_info.discovery);
+                let ip = radar_info.discovery.address.split(':').next().unwrap_or(&radar_info.discovery.address);
+                if self.poll_count % 100 == 1 {
+                    debug(&format!("Registering Furuno {} at {} for spokes", state.id, ip));
+                }
+                // add_furuno_radar checks for duplicates internally
+                self.spoke_receiver.add_furuno_radar(&state.id, ip);
+            }
+        }
+
+        // Poll for spoke data and emit to SignalK stream
+        let spokes_emitted = self.spoke_receiver.poll();
+
+        // Log spoke activity periodically (every 100 polls or when spokes emitted)
+        if self.poll_count % 100 == 0 {
+            debug(&format!(
+                "RadarProvider poll #{}: {} radars, {} spokes emitted",
+                self.poll_count,
+                self.locator.radars.len(),
+                spokes_emitted
+            ));
+        }
+
+        // Periodically emit radar list
+        if self.poll_count % 100 == 0 {
+            self.emit_radar_list();
+        }
+
+        0
+    }
+
+    /// Emit a radar discovery delta
+    fn emit_radar_discovered(&self, discovery: &RadarDiscovery) {
+        let state = RadarState::from(discovery);
+        let path = format!("radars.{}", state.id);
+
+        // Debug: show what we're sending
+        if let Ok(json) = serde_json::to_string(&state) {
+            debug(&format!("Radar JSON ({}): {}", json.len(), &json[..json.len().min(200)]));
+        }
+
+        emit_json(&path, &state);
+        debug(&format!("Emitted radar discovery: {} at path {}", state.id, path));
+    }
+
+    /// Emit the full radar list
+    fn emit_radar_list(&self) {
+        let count = self.locator.radars.len();
+        if count == 0 {
+            return;
+        }
+
+        // Emit each radar individually (SignalK expects individual path updates)
+        for radar_info in self.locator.radars.values() {
+            let state = RadarState::from(&radar_info.discovery);
+            let path = format!("radars.{}", state.id);
+            emit_json(&path, &state);
+        }
+
+        debug(&format!("Emitted {} radar(s)", count));
+    }
+
+    /// Shutdown the provider
+    pub fn shutdown(&mut self) {
+        self.locator.shutdown();
+        self.spoke_receiver.shutdown();
+    }
+
+    /// Get list of radar IDs for the Radar Provider API
+    pub fn get_radar_ids(&self) -> Vec<&str> {
+        self.locator
+            .radars
+            .values()
+            .map(|r| {
+                // Generate the same ID format as RadarState
+                // We need to return &str, so we'll store the IDs differently
+                // For now, leak the string (acceptable in WASM single-use context)
+                let state = RadarState::from(&r.discovery);
+                let id: &'static str = Box::leak(state.id.into_boxed_str());
+                id
+            })
+            .collect()
+    }
+
+    /// Get radar info for the Radar Provider API
+    pub fn get_radar_info(&self, radar_id: &str) -> Option<RadarState> {
+        // Find the radar by ID
+        for radar_info in self.locator.radars.values() {
+            let state = RadarState::from(&radar_info.discovery);
+            if state.id == radar_id {
+                return Some(state);
+            }
+        }
+        None
+    }
+
+    /// Find radar discovery by ID
+    fn find_radar(&self, radar_id: &str) -> Option<&crate::locator::DiscoveredRadar> {
+        for radar_info in self.locator.radars.values() {
+            let state = RadarState::from(&radar_info.discovery);
+            if state.id == radar_id {
+                return Some(radar_info);
+            }
+        }
+        None
+    }
+
+    /// Set radar power state
+    pub fn set_power(&mut self, radar_id: &str, state: &str) -> bool {
+        debug(&format!("set_power({}, {})", radar_id, state));
+
+        if let Some(radar) = self.find_radar(radar_id) {
+            // Send command to mayara-server via UDP
+            let ip = radar.discovery.address.split(':').next().unwrap_or("127.0.0.1");
+            let cmd = serde_json::json!({
+                "type": "set_power",
+                "radarId": radar_id,
+                "state": state
+            });
+            self.send_control_command(ip, &cmd)
+        } else {
+            debug(&format!("set_power: radar {} not found", radar_id));
+            false
+        }
+    }
+
+    /// Set radar range in meters
+    pub fn set_range(&mut self, radar_id: &str, range: u32) -> bool {
+        debug(&format!("set_range({}, {})", radar_id, range));
+
+        if let Some(radar) = self.find_radar(radar_id) {
+            let ip = radar.discovery.address.split(':').next().unwrap_or("127.0.0.1");
+            let cmd = serde_json::json!({
+                "type": "set_range",
+                "radarId": radar_id,
+                "range": range
+            });
+            self.send_control_command(ip, &cmd)
+        } else {
+            debug(&format!("set_range: radar {} not found", radar_id));
+            false
+        }
+    }
+
+    /// Set radar gain
+    pub fn set_gain(&mut self, radar_id: &str, auto: bool, value: Option<u8>) -> bool {
+        debug(&format!("set_gain({}, auto={}, value={:?})", radar_id, auto, value));
+
+        if let Some(radar) = self.find_radar(radar_id) {
+            let ip = radar.discovery.address.split(':').next().unwrap_or("127.0.0.1");
+            let cmd = serde_json::json!({
+                "type": "set_gain",
+                "radarId": radar_id,
+                "auto": auto,
+                "value": value
+            });
+            self.send_control_command(ip, &cmd)
+        } else {
+            debug(&format!("set_gain: radar {} not found", radar_id));
+            false
+        }
+    }
+
+    /// Set multiple radar controls at once
+    pub fn set_controls(&mut self, radar_id: &str, controls: &serde_json::Value) -> bool {
+        debug(&format!("set_controls({}, {:?})", radar_id, controls));
+
+        if let Some(radar) = self.find_radar(radar_id) {
+            let ip = radar.discovery.address.split(':').next().unwrap_or("127.0.0.1");
+            let cmd = serde_json::json!({
+                "type": "set_controls",
+                "radarId": radar_id,
+                "controls": controls
+            });
+            self.send_control_command(ip, &cmd)
+        } else {
+            debug(&format!("set_controls: radar {} not found", radar_id));
+            false
+        }
+    }
+
+    /// Send control command to mayara-server via UDP
+    fn send_control_command(&self, ip: &str, cmd: &serde_json::Value) -> bool {
+        use crate::signalk_ffi::UdpSocket;
+
+        // mayara-server control port (convention: 3002 for control commands)
+        const CONTROL_PORT: u16 = 3002;
+
+        let json = match serde_json::to_string(cmd) {
+            Ok(j) => j,
+            Err(e) => {
+                debug(&format!("Failed to serialize control command: {}", e));
+                return false;
+            }
+        };
+
+        debug(&format!("Sending control to {}:{}: {}", ip, CONTROL_PORT, json));
+
+        // Create UDP socket and send command
+        match UdpSocket::bind("0.0.0.0:0") {
+            Ok(socket) => {
+                match socket.send_to(json.as_bytes(), ip, CONTROL_PORT) {
+                    Ok(_) => {
+                        debug("Control command sent successfully");
+                        true
+                    }
+                    Err(e) => {
+                        debug(&format!("Failed to send control command: {:?}", e));
+                        false
+                    }
+                }
+            }
+            Err(e) => {
+                debug(&format!("Failed to create control socket: {:?}", e));
+                false
+            }
+        }
+    }
+}
+
+impl Default for RadarProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}

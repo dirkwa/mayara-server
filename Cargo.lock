@@ -1504,6 +1504,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mayara-core"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "mayara-lib"
 version = "0.3.0"
 dependencies = [
@@ -1534,6 +1544,7 @@ dependencies = [
  "hyper-util",
  "libc",
  "log",
+ "mayara-core",
  "mdns-sd",
  "miette",
  "nalgebra",
@@ -1641,6 +1652,15 @@ dependencies = [
  "tungstenite 0.26.2 (git+https://github.com/keesverruijt/tungstenite-rs.git?branch=permessage-deflate)",
  "w32-error",
  "windows",
+]
+
+[[package]]
+name = "mayara-signalk-wasm"
+version = "0.1.0"
+dependencies = [
+ "mayara-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

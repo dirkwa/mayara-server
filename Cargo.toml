@@ -1,3 +1,9 @@
 [workspace]
-members = ["mayara-server", "mayara-lib"]
+members = ["mayara-core", "mayara-lib", "mayara-server", "mayara-signalk-wasm"]
 resolver = "2"
+
+# WASM release profile optimizations
+[profile.release]
+opt-level = "s"     # Optimize for size
+lto = true          # Link-time optimization
+codegen-units = 1   # Better optimization
