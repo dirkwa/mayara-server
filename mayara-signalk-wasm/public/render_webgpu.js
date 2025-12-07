@@ -19,13 +19,13 @@ class render_webgpu {
     // Tunable settings (can be adjusted via settings panel)
     this.settings = {
       transparencyThreshold: 11,  // Values below this are transparent (0-255)
-      fillMultiplier: 2.4,        // Angular fill multiplier
-      radialFill: 2.6,            // Radial fill expansion
+      fillMultiplier: 3.0,        // Angular fill multiplier (increased for better patch connection)
+      radialFill: 4.0,            // Radial fill expansion (increased for better patch connection)
       spokeCount: 2048,           // Number of spokes
       interpolation: 0.3,         // 0=max only, 1=mix+max
       gamma: 1.6,                 // Color gamma correction
       edgeSoftness: 0.06,         // Edge anti-aliasing width
-      sampleCount: 6,             // Number of angular samples (1-15)
+      sampleCount: 10,            // Number of angular samples (increased for more fill)
     };
 
     // Create settings panel
@@ -137,7 +137,7 @@ class render_webgpu {
       this.settings.interpolation,
       this.settings.gamma,
       this.settings.edgeSoftness,
-      0.0  // Padding
+      this.spokesPerRevolution || 2048.0  // Actual spoke count (was padding)
     ]);
     this.device.queue.writeBuffer(this.settingsBuffer, 0, settingsData);
   }
@@ -244,6 +244,9 @@ class render_webgpu {
       format: "r8unorm",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
+
+    // Update settings buffer with actual spoke count
+    this.#updateSettingsBuffer();
 
     this.#createPipelineAndBindGroup();
   }
@@ -498,7 +501,7 @@ struct Settings {
   interpolation: f32,
   gamma: f32,
   edgeSoftness: f32,
-  pad: f32,
+  spokeCount: f32,
 }
 
 @group(0) @binding(3) var<uniform> u_transform: mat4x4<f32>;
@@ -536,7 +539,7 @@ fn fragmentMain(@location(0) texCoord: vec2<f32>) -> @location(0) vec4<f32> {
   let normalizedTheta = theta / (2.0 * PI);
 
   // Angular interpolation between adjacent spokes
-  let spokeCount = 2048.0;
+  let spokeCount = settings.spokeCount;
   let spoke_f = normalizedTheta * spokeCount;
   let spoke0 = floor(spoke_f);
   let spoke1 = spoke0 + 1.0;
@@ -552,8 +555,11 @@ fn fragmentMain(@location(0) texCoord: vec2<f32>) -> @location(0) vec4<f32> {
   let interpIndex = mix(idx0, idx1, t);
 
   // Angular fill expansion sampling
-  let angularStep = settings.fillMultiplier / spokeCount;
-  let radialStep = settings.radialFill * 0.01;
+  // Scale angular step with radius (arc length correction: gaps grow with distance)
+  let angularStep = settings.fillMultiplier / spokeCount * max(1.0, r * 2.0);
+  // Radial step: scale to be meaningful relative to spoke data resolution
+  // With 883 pixels over r=0..1, each pixel is ~0.00113, so 0.003 covers ~2-3 pixels
+  let radialStep = settings.radialFill * 0.003;
 
   // Sample grid around the pixel for better fill
   // Angular samples at different offsets
@@ -567,6 +573,11 @@ fn fragmentMain(@location(0) texCoord: vec2<f32>) -> @location(0) vec4<f32> {
   let s1 = textureSample(polarData, texSampler, vec2<f32>(r, normalizedTheta + angularStep)).r;
   let s2 = textureSample(polarData, texSampler, vec2<f32>(r, normalizedTheta - angularStep)).r;
   maxIndex = max(maxIndex, max(s1, s2));
+
+  // Sample radial +/- (always active - critical for connecting patches)
+  let sr1 = textureSample(polarData, texSampler, vec2<f32>(r + radialStep, normalizedTheta)).r;
+  let sr2 = textureSample(polarData, texSampler, vec2<f32>(r - radialStep, normalizedTheta)).r;
+  maxIndex = max(maxIndex, max(sr1, sr2));
 
   // Sample 4-5: angular +/- x2 (if sampleCount > 3)
   let s3 = textureSample(polarData, texSampler, vec2<f32>(r, normalizedTheta + angularStep * 2.0)).r;
