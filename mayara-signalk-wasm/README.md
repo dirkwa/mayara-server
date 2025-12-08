@@ -41,11 +41,17 @@ ssh -L 3000:localhost:3000 user@192.168.0.10
 ```
 Then access via `http://localhost:3000`
 
-**Option 2: Chrome Insecure Origins Flag**
-1. Go to `chrome://flags`
-2. Search for "Insecure origins treated as secure"
-3. Add `http://192.168.0.10:3000` to the list
-4. Restart Chrome
+**Option 2: Chrome Flags for Insecure Origins**
+
+Enable these flags in `chrome://flags`:
+
+1. **Unsafe WebGPU Support** (`chrome://flags/#enable-unsafe-webgpu`)
+   - Set to **Enabled**
+
+2. **Insecure origins treated as secure** (`chrome://flags/#unsafely-treat-insecure-origin-as-secure`)
+   - Add your SignalK server URL: `http://192.168.0.10:3000`
+
+3. Restart Chrome
 
 **Option 3: HTTPS/SSL**
 - Configure SignalK with HTTPS/SSL certificates

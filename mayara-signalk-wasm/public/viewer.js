@@ -82,7 +82,7 @@ const RANGE_SCALE = 0.9; // Factor by which we fill the (w,h) canvas with the ou
 registerRadarCallback(radarLoaded);
 registerControlCallback(controlUpdate);
 
-window.onload = function () {
+window.onload = async function () {
   const urlParams = new URLSearchParams(window.location.search);
   const id = urlParams.get("id");
   const draw = urlParams.get("draw");
@@ -93,40 +93,53 @@ window.onload = function () {
     RadarMessage = root.lookupType(".RadarMessage");
   });
 
-  try {
-    if (draw == "2d") {
-      renderer = new render_2d(
+  async function createRenderer(type) {
+    if (type == "2d") {
+      return new render_2d(
         document.getElementById("myr_canvas"),
         document.getElementById("myr_canvas_background"),
         drawBackground
       );
-    } else if (draw == "alt") {
-      renderer = new render_webgl_alt(
+    } else if (type == "alt") {
+      return new render_webgl_alt(
         document.getElementById("myr_canvas_webgl"),
         document.getElementById("myr_canvas_background"),
         drawBackground
       );
-    } else if (draw == "webgpu") {
-      renderer = new render_webgpu(
+    } else if (type == "webgpu") {
+      // Check WebGPU availability before creating renderer
+      if (!navigator.gpu) {
+        throw new Error("WebGPU not supported by browser");
+      }
+      const r = new render_webgpu(
         document.getElementById("myr_canvas_webgpu"),
         document.getElementById("myr_canvas_background"),
         drawBackground
       );
+      // Wait for async initialization to complete
+      await r.initPromise;
+      return r;
     } else {
-      renderer = new render_webgl(
+      return new render_webgl(
         document.getElementById("myr_canvas_webgl"),
         document.getElementById("myr_canvas_background"),
         drawBackground
       );
     }
+  }
+
+  try {
+    renderer = await createRenderer(draw);
   } catch (e) {
     console.log(e);
-    console.log("Falling back on 2d context");
-    renderer = new render_2d(
-      document.getElementById("myr_canvas"),
-      document.getElementById("myr_canvas_background"),
-      drawBackground
-    );
+    console.log("Falling back to WebGL renderer");
+    try {
+      renderer = await createRenderer(null); // Default to WebGL
+    } catch (e2) {
+      console.log(e2);
+      console.log("Falling back to 2D canvas renderer");
+      renderer = await createRenderer("2d");
+    }
   }
 
   loadRadar(id);

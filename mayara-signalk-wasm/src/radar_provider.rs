@@ -93,15 +93,15 @@ impl From<&RadarDiscovery> for RadarState {
             }),
         );
 
-        // Control 1: Power on/off
+        // Control 1: Power transmit/standby
         controls.insert(
             "1".to_string(),
             serde_json::json!({
                 "name": "Power",
-                "validValues": [0, 1],
+                "validValues": ["transmit", "standby"],
                 "descriptions": {
-                    "0": "Off",
-                    "1": "On"
+                    "transmit": "Transmit",
+                    "standby": "Standby"
                 }
             }),
         );
