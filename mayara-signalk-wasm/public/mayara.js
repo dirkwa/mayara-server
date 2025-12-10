@@ -33,13 +33,13 @@ const RadarEntry = (id, name) =>
     ),
     td(
       { class: "myr" },
-      a({ href: "viewer.html?id=" + id }, name + " PPI Viewer")
+      a({ href: "viewer.html?id=" + id }, name + " PPI (default)")
     ),
     td(
       { class: "myr" },
       a(
-        { href: "viewer.html?id=" + id + "&draw=alt" },
-        name + " PPI (WebGL alt)"
+        { href: "viewer.html?id=" + id + "&draw=webgl" },
+        name + " PPI (WebGL texture)"
       )
     ),
     td(
@@ -48,19 +48,8 @@ const RadarEntry = (id, name) =>
         { href: "viewer.html?id=" + id + "&draw=2d" },
         name + " PPI (2D Canvas)"
       )
-    ),
-    td(
-      { class: "myr" },
-      a(
-        { href: "viewer.html?id=" + id + "&draw=webgpu" },
-        name + " PPI (WebGPU)"
-      )
     )
   );
-
-// Check URL params to see if auto-redirect is disabled
-const urlParams = new URLSearchParams(window.location.search);
-const autoRedirect = urlParams.get("auto") !== "false";
 
 function radarsLoaded(d) {
   let radarIds = Object.keys(d);
@@ -71,13 +60,6 @@ function radarsLoaded(d) {
   r.innerHTML = "";
 
   if (c > 0) {
-    // Auto-redirect to the first radar's WebGPU PPI view
-    if (autoRedirect) {
-      let firstRadarId = radarIds.sort()[0];
-      window.location.href = "viewer.html?id=" + firstRadarId + "&draw=webgpu";
-      return;
-    }
-
     van.add(r, div(c + " radar(s) detected"));
     let table = document.createElement("table");
     r.appendChild(table);

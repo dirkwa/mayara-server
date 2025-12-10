@@ -2,9 +2,14 @@
 //!
 //! Receives spoke data from discovered radars and emits to SignalK stream.
 
-use mayara_core::protocol::furuno;
+use mayara_core::protocol::furuno::{self, ParsedSpoke};
 use crate::signalk_ffi::{debug, UdpSocket, emit_radar_spokes};
 use crate::protobuf::encode_radar_message;
+
+/// Furuno sends 8192 spokes per revolution, we reduce to 2048 for WebSocket efficiency
+const FURUNO_SPOKE_REDUCTION: usize = 4;
+/// Output spokes per revolution after reduction (8192 / 4 = 2048)
+pub const FURUNO_OUTPUT_SPOKES: u16 = 2048;
 
 /// State for a single radar's spoke reception
 pub struct RadarSpokeState {
@@ -18,6 +23,8 @@ pub struct RadarSpokeState {
     pub prev_spoke: Vec<u8>,
     /// Current range in meters
     pub current_range: u32,
+    /// Spoke accumulator for combining 4 spokes into 1
+    spoke_accumulator: Vec<ParsedSpoke>,
 }
 
 /// Spoke receiver for all radars
@@ -86,6 +93,7 @@ impl SpokeReceiver {
             source_ip: source_ip.to_string(),
             prev_spoke: Vec::new(),
             current_range: 1500, // Default 1.5km
+            spoke_accumulator: Vec::with_capacity(FURUNO_SPOKE_REDUCTION),
         });
 
         // Start socket if not already listening
@@ -155,6 +163,41 @@ impl SpokeReceiver {
         total_emitted
     }
 
+    /// Combine multiple spokes into one using max() for each pixel
+    /// This preserves radar targets while reducing data rate
+    fn combine_spokes(spokes: &[ParsedSpoke]) -> ParsedSpoke {
+        if spokes.is_empty() {
+            return ParsedSpoke {
+                angle: 0,
+                heading: None,
+                data: Vec::new(),
+            };
+        }
+
+        // Use first spoke's angle (divided by reduction factor) and heading
+        let output_angle = spokes[0].angle / FURUNO_SPOKE_REDUCTION as u16;
+        let heading = spokes[0].heading;
+
+        // Find max data length
+        let max_len = spokes.iter().map(|s| s.data.len()).max().unwrap_or(0);
+
+        // Combine pixel data using max() - preserves targets
+        let mut combined_data = vec![0u8; max_len];
+        for spoke in spokes {
+            for (i, &pixel) in spoke.data.iter().enumerate() {
+                if pixel > combined_data[i] {
+                    combined_data[i] = pixel;
+                }
+            }
+        }
+
+        ParsedSpoke {
+            angle: output_angle,
+            heading,
+            data: combined_data,
+        }
+    }
+
     /// Process a Furuno spoke frame
     fn process_furuno_frame(&mut self, data: &[u8], radar_idx: usize) -> u32 {
         static mut FRAME_COUNT: u64 = 0;
@@ -193,15 +236,36 @@ impl SpokeReceiver {
                     return 0;
                 }
 
-                // Encode to protobuf
-                let protobuf_data = encode_radar_message(numeric_id, &spokes, range);
+                // Accumulate spokes for reduction (8192 -> 2048)
+                // Add all parsed spokes to the accumulator
+                for spoke in spokes {
+                    radar.spoke_accumulator.push(spoke);
+                }
+
+                // Combine when we have enough spokes
+                let mut combined_spokes: Vec<ParsedSpoke> = Vec::new();
+                while radar.spoke_accumulator.len() >= FURUNO_SPOKE_REDUCTION {
+                    // Take first FURUNO_SPOKE_REDUCTION spokes
+                    let to_combine: Vec<ParsedSpoke> = radar.spoke_accumulator
+                        .drain(..FURUNO_SPOKE_REDUCTION)
+                        .collect();
+                    combined_spokes.push(Self::combine_spokes(&to_combine));
+                }
+
+                if combined_spokes.is_empty() {
+                    return 0;
+                }
+
+                // Encode combined spokes to protobuf
+                let protobuf_data = encode_radar_message(numeric_id, &combined_spokes, range);
 
                 // Log periodically
                 unsafe {
                     if FRAME_COUNT % 500 == 0 {
                         debug(&format!(
-                            "Frame #{}: {} spokes, range={}m, protobuf={} bytes, emit success/fail={}/{}",
-                            FRAME_COUNT, spokes.len(), range, protobuf_data.len(),
+                            "Frame #{}: {} combined spokes (from {}), range={}m, protobuf={} bytes, emit success/fail={}/{}",
+                            FRAME_COUNT, combined_spokes.len(), combined_spokes.len() * FURUNO_SPOKE_REDUCTION,
+                            range, protobuf_data.len(),
                             EMIT_SUCCESS, EMIT_FAIL
                         ));
                     }
@@ -210,7 +274,7 @@ impl SpokeReceiver {
                 // Emit to SignalK
                 if emit_radar_spokes(&radar_id, &protobuf_data) {
                     unsafe { EMIT_SUCCESS += 1; }
-                    spokes.len() as u32
+                    combined_spokes.len() as u32
                 } else {
                     unsafe { EMIT_FAIL += 1; }
                     // Log emit failures

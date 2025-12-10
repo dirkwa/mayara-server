@@ -277,7 +277,7 @@ class render_webgl_alt {
       Math.max(this.center_x, this.center_y) * RANGE_SCALE
     );
 
-    this.drawBackgroundCallback(this, "MAYARA (WebGL Alt)");
+    this.drawBackgroundCallback(this, "MAYARA");
 
     this.#setTransformationMatrix();
 

@@ -10,12 +10,9 @@ import {
 } from "./control.js";
 import "./protobuf/protobuf.min.js";
 
-const prefix = "myr_";
-
 import { render_2d } from "./render_2d.js";
 import { render_webgl } from "./render_webgl.js";
 import { render_webgl_alt } from "./render_webgl_alt.js";
-import { render_webgpu } from "./render_webgpu.js";
 
 var webSocket;
 var RadarMessage;
@@ -25,9 +22,6 @@ var noTransmitAngles = Array();
 function divides_near(a, b) {
   let remainder = a % b;
   let r = remainder <= 1.0 || remainder >= b - 1;
-  console.log(
-    "divides_near: " + a + " % " + b + " = " + remainder + " -> " + r
-  );
   return r;
 }
 
@@ -83,7 +77,7 @@ const RANGE_SCALE = 0.9; // Factor by which we fill the (w,h) canvas with the ou
 registerRadarCallback(radarLoaded);
 registerControlCallback(controlUpdate);
 
-window.onload = async function () {
+window.onload = function () {
   const urlParams = new URLSearchParams(window.location.search);
   const id = urlParams.get("id");
   const draw = urlParams.get("draw");
@@ -94,53 +88,36 @@ window.onload = async function () {
     RadarMessage = root.lookupType(".RadarMessage");
   });
 
-  async function createRenderer(type) {
-    if (type == "2d") {
-      return new render_2d(
+  try {
+    if (draw == "2d") {
+      renderer = new render_2d(
         document.getElementById("myr_canvas"),
         document.getElementById("myr_canvas_background"),
         drawBackground
       );
-    } else if (type == "alt") {
-      return new render_webgl_alt(
+    } else if (draw == "webgl") {
+      // Polar framebuffer approach - texture sampling
+      renderer = new render_webgl(
         document.getElementById("myr_canvas_webgl"),
         document.getElementById("myr_canvas_background"),
         drawBackground
       );
-    } else if (type == "webgpu") {
-      // Check WebGPU availability before creating renderer
-      if (!navigator.gpu) {
-        throw new Error("WebGPU not supported by browser");
-      }
-      const r = new render_webgpu(
-        document.getElementById("myr_canvas_webgpu"),
-        document.getElementById("myr_canvas_background"),
-        drawBackground
-      );
-      // Wait for async initialization to complete
-      await r.initPromise;
-      return r;
     } else {
-      return new render_webgl(
+      // Default: WebGL with line-pairs for filled areas
+      renderer = new render_webgl_alt(
         document.getElementById("myr_canvas_webgl"),
         document.getElementById("myr_canvas_background"),
         drawBackground
       );
     }
-  }
-
-  try {
-    renderer = await createRenderer(draw);
   } catch (e) {
     console.log(e);
-    console.log("Falling back to WebGL renderer");
-    try {
-      renderer = await createRenderer(null); // Default to WebGL
-    } catch (e2) {
-      console.log(e2);
-      console.log("Falling back to 2D canvas renderer");
-      renderer = await createRenderer("2d");
-    }
+    console.log("Falling back on 2d context");
+    renderer = new render_2d(
+      document.getElementById("myr_canvas"),
+      document.getElementById("myr_canvas_background"),
+      drawBackground
+    );
   }
 
   loadRadar(id);
@@ -166,7 +143,6 @@ function radarLoaded(r) {
   renderer.setSpokes(spokesPerRevolution, maxSpokeLen);
 
   // Use provided streamUrl or construct SignalK stream URL
-  // Check for undefined, null, empty, or literal string "undefined"
   let streamUrl = r.streamUrl;
   if (!streamUrl || streamUrl === "undefined" || streamUrl === "null") {
     const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -302,8 +278,8 @@ function drawBackground(obj, txt) {
   // Use actual_range as fallback if range not set from controls
   const range = obj.range || obj.actual_range;
 
-  obj.background_ctx.strokeStyle = "#00ff00";
-  obj.background_ctx.fillStyle = "#00ff00";
+  obj.background_ctx.strokeStyle = "white";
+  obj.background_ctx.fillStyle = "white";
   obj.background_ctx.font = "bold 16px/1 Verdana, Geneva, sans-serif";
   for (let i = 0; i <= 4; i++) {
     obj.background_ctx.beginPath();
@@ -343,5 +319,5 @@ function drawBackground(obj, txt) {
     });
   }
   obj.background_ctx.fillStyle = "lightblue";
-  this.background_ctx.fillText(txt, 5, 20);
+  obj.background_ctx.fillText(txt, 5, 20);
 }

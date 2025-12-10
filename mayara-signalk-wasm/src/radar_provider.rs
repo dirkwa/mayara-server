@@ -6,11 +6,12 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 use mayara_core::radar::RadarDiscovery;
+use mayara_core::Brand;
 
 use crate::furuno_controller::FurunoController;
 use crate::locator::RadarLocator;
 use crate::signalk_ffi::{debug, emit_json};
-use crate::spoke_receiver::SpokeReceiver;
+use crate::spoke_receiver::{SpokeReceiver, FURUNO_OUTPUT_SPOKES};
 
 /// Sanitize a string to be safe for JSON and SignalK paths
 fn sanitize_string(s: &str) -> String {
@@ -118,13 +119,21 @@ impl From<&RadarDiscovery> for RadarState {
         // stream_url is omitted so clients use SignalK's built-in /radars/{id}/stream
         let _ = ip; // Suppress unused warning
 
+        // For Furuno radars, we reduce 8192 spokes to 2048 for WebSocket efficiency
+        // This reduction happens in spoke_receiver.rs using max-of-4 combining
+        let spokes_per_revolution = if d.brand == Brand::Furuno {
+            FURUNO_OUTPUT_SPOKES
+        } else {
+            d.spokes_per_revolution
+        };
+
         Self {
             id: id.clone(),
             name: sanitized_name.clone(),
             brand: brand_str.to_string(),
             model: d.model.clone().map(|m| sanitize_string(&m)),
             status: "standby".to_string(),
-            spokes_per_revolution: d.spokes_per_revolution,
+            spokes_per_revolution,
             max_spoke_len: d.max_spoke_len,
             // No external streamUrl - clients use SignalK's built-in /radars/{id}/stream
             // Spokes are emitted via sk_radar_emit_spokes FFI

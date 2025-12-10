@@ -250,13 +250,13 @@ const fragmentShaderSource = `#version 300 es
 
   uniform sampler2D u_polarIndexData; // Polar data texture (contains indices)
   uniform sampler2D u_colorTable;     // Color table texture (contains RGBA values)
-  
+
   void main() {
     // Convert texture coordinates into polar coordinates
     vec2 centeredCoords = v_texCoord - vec2(0.5, 0.5); // Center the coords at (0.5, 0.5)
     float r = length(centeredCoords) * 2.0; // Compute the radius
     float theta = atan(centeredCoords.y, centeredCoords.x); // Compute the angle (theta)
-    
+
     // Normalize theta to be in the range [0, 1] for texture sampling
     float normalizedTheta = 1.0 - (theta + 3.14159265) / (2.0 * 3.14159265); // Map [-π, π] to [0, 1]
 
@@ -264,7 +264,7 @@ const fragmentShaderSource = `#version 300 es
     float index = texture(u_polarIndexData, vec2(r, normalizedTheta)).r;
 
     // Use the index to look up the color in the color table (1D texture)
-    color = texture(u_colorTable, vec2(index, 0.0)); 
+    color = texture(u_colorTable, vec2(index, 0.0));
   }
 `;
 
@@ -325,7 +325,7 @@ function updateTexture(gl, data, spokesPerRevolution, max_spoke_len) {
     gl.UNSIGNED_BYTE,
     data
   );
-  gl.generateMipmap(gl.TEXTURE_2D);
+  // Don't use mipmaps with R8 format - use LINEAR filtering directly
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -349,12 +349,11 @@ function loadColorTableTexture(gl, legend) {
     legend
   );
 
-  // Set texture parameters
-  gl.generateMipmap(gl.TEXTURE_2D);
+  // Set texture parameters - don't use mipmaps for 1D-like lookup texture
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
   return texture;
 }

@@ -9,6 +9,7 @@ class render_2d {
     this.dom = canvas_dom;
     this.background_dom = canvas_background_dom;
     this.drawBackgroundCallback = drawBackground;
+    this.actual_range = 0;
     this.redrawCanvas();
   }
 
@@ -72,15 +73,21 @@ class render_2d {
   // - data: spoke data from closest to furthest from radome. Each byte value can be
   //         looked up in the legend.
   drawSpoke(spoke) {
+    if (this.actual_range != spoke.range) {
+      this.actual_range = spoke.range;
+      this.redrawCanvas();
+    }
     let a =
       (2 *
         Math.PI *
         ((spoke.angle + (this.spokesPerRevolution * 3) / 4) %
           this.spokesPerRevolution)) /
       this.spokesPerRevolution;
+    // Use actual_range as fallback if range not set from controls
+    const range = this.range || this.actual_range || 1500;
     let pixels_per_item = (this.beam_length * RANGE_SCALE) / spoke.data.length;
-    if (this.range) {
-      pixels_per_item = (pixels_per_item * spoke.range) / this.range;
+    if (range) {
+      pixels_per_item = (pixels_per_item * spoke.range) / range;
     }
     let c = Math.cos(a) * pixels_per_item;
     let s = Math.sin(a) * pixels_per_item;
