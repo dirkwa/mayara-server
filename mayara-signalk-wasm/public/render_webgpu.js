@@ -17,6 +17,11 @@ class render_webgpu {
     this.pendingLegend = null;
     this.pendingSpokes = null;
 
+    // Rotation tracking for neighbor enhancement
+    this.rotationCount = 0;
+    this.lastSpokeAngle = -1;
+    this.fillRotations = 4; // Number of rotations to use neighbor enhancement
+
     // Start async initialization
     this.initPromise = this.#initWebGPU();
   }
@@ -210,6 +215,9 @@ class render_webgpu {
       this.actual_range = spoke.range;
       // Clear spoke data when range changes - old data is at wrong scale
       this.data.fill(0);
+      // Reset rotation counter on range change
+      this.rotationCount = 0;
+      this.lastSpokeAngle = -1;
       this.redrawCanvas();
     }
 
@@ -219,6 +227,12 @@ class render_webgpu {
       return;
     }
 
+    // Track rotations: detect when we wrap around from high angle to low angle
+    if (this.lastSpokeAngle >= 0 && spoke.angle < this.lastSpokeAngle - this.spokesPerRevolution / 2) {
+      this.rotationCount++;
+    }
+    this.lastSpokeAngle = spoke.angle;
+
     let offset = spoke.angle * this.max_spoke_len;
 
     // Check if data fits in buffer
@@ -227,42 +241,140 @@ class render_webgpu {
       return;
     }
 
-    // Write spoke data with neighbor enhancement
-    // For each pixel, if it has a value, also boost adjacent spokes
     const spokeLen = spoke.data.length;
     const maxLen = this.max_spoke_len;
-    const spokes = this.spokesPerRevolution;
 
-    // Calculate neighbor spoke offsets (with wrap-around) - 4 spokes each direction
-    const neighborOffsets = [];
-    const blendFactors = [0.9, 0.75, 0.55, 0.35]; // Falloff for each distance
+    // Only use neighbor enhancement during first few rotations to fill display quickly
+    if (this.rotationCount < this.fillRotations) {
+      // Write spoke data with neighbor enhancement
+      // Strong signals spread wider, weak signals spread less
+      const spokes = this.spokesPerRevolution;
 
-    for (let d = 1; d <= 4; d++) {
-      const prev = (spoke.angle + spokes - d) % spokes;
-      const next = (spoke.angle + d) % spokes;
-      neighborOffsets.push({
-        prevOffset: prev * maxLen,
-        nextOffset: next * maxLen,
-        blend: blendFactors[d - 1]
-      });
-    }
+      for (let i = 0; i < spokeLen; i++) {
+        const val = spoke.data[i];
+        // Write current spoke at full value
+        this.data[offset + i] = val;
 
-    for (let i = 0; i < spokeLen; i++) {
-      const val = spoke.data[i];
-      // Write current spoke at full value
-      this.data[offset + i] = val;
+        if (val > 1) {
+          // Strong signals (>60): spread wide (±6 spokes) with higher intensity
+          // Medium signals (25-60): spread medium (±4 spokes)
+          // Weak signals (<25): spread narrow (±2 spokes) with lower intensity
+          let spreadWidth, blendFactors;
 
-      // Enhance neighbors if this pixel has signal
-      if (val > 1) {
-        for (const n of neighborOffsets) {
-          const blendVal = Math.floor(val * n.blend);
-          if (this.data[n.prevOffset + i] < blendVal) {
-            this.data[n.prevOffset + i] = blendVal;
+          if (val > 60) {
+            // Strong signal - spread wide and strong
+            spreadWidth = 6;
+            blendFactors = [0.95, 0.88, 0.78, 0.65, 0.50, 0.35];
+          } else if (val > 25) {
+            // Medium signal - normal spread
+            spreadWidth = 4;
+            blendFactors = [0.85, 0.65, 0.45, 0.25];
+          } else {
+            // Weak signal - narrow spread, lower intensity
+            spreadWidth = 2;
+            blendFactors = [0.6, 0.3];
           }
-          if (this.data[n.nextOffset + i] < blendVal) {
-            this.data[n.nextOffset + i] = blendVal;
+
+          for (let d = 1; d <= spreadWidth; d++) {
+            const prev = (spoke.angle + spokes - d) % spokes;
+            const next = (spoke.angle + d) % spokes;
+            const prevOffset = prev * maxLen;
+            const nextOffset = next * maxLen;
+            const blendVal = Math.floor(val * blendFactors[d - 1]);
+
+            if (this.data[prevOffset + i] < blendVal) {
+              this.data[prevOffset + i] = blendVal;
+            }
+            if (this.data[nextOffset + i] < blendVal) {
+              this.data[nextOffset + i] = blendVal;
+            }
           }
         }
+      }
+    } else {
+      // RUN mode: smart filtering
+      // - Strong signals with neighbor support get amplified aggressively (wide check ±4)
+      // - Isolated weak signals (scatter) get killed
+      const spokes = this.spokesPerRevolution;
+
+      // Wide neighbor check for strong signals: ±4 spokes
+      const prev1Offset = ((spoke.angle + spokes - 1) % spokes) * maxLen;
+      const prev2Offset = ((spoke.angle + spokes - 2) % spokes) * maxLen;
+      const prev3Offset = ((spoke.angle + spokes - 3) % spokes) * maxLen;
+      const prev4Offset = ((spoke.angle + spokes - 4) % spokes) * maxLen;
+      const next1Offset = ((spoke.angle + 1) % spokes) * maxLen;
+      const next2Offset = ((spoke.angle + 2) % spokes) * maxLen;
+      const next3Offset = ((spoke.angle + 3) % spokes) * maxLen;
+      const next4Offset = ((spoke.angle + 4) % spokes) * maxLen;
+
+      for (let i = 0; i < spokeLen; i++) {
+        const val = spoke.data[i];
+
+        // Check neighbor support (from previous rotation's data still in buffer)
+        const prev1 = this.data[prev1Offset + i];
+        const prev2 = this.data[prev2Offset + i];
+        const prev3 = this.data[prev3Offset + i];
+        const prev4 = this.data[prev4Offset + i];
+        const next1 = this.data[next1Offset + i];
+        const next2 = this.data[next2Offset + i];
+        const next3 = this.data[next3Offset + i];
+        const next4 = this.data[next4Offset + i];
+
+        // For strong signals: use wide sum (±4)
+        const wideSum = prev1 + prev2 + prev3 + prev4 + next1 + next2 + next3 + next4;
+        const wideMax = Math.max(prev1, prev2, prev3, prev4, next1, next2, next3, next4);
+        // For weak signals: use narrow sum (±2)
+        const narrowSum = prev1 + prev2 + next1 + next2;
+        const narrowMax = Math.max(prev1, prev2, next1, next2);
+
+        let outputVal;
+
+        if (val > 60) {
+          // Strong signal: use wide neighbor check (±4)
+          if (wideSum > 200) {
+            // Solid mass - boost hard and spread to neighbors
+            outputVal = Math.min(255, Math.floor(val * 1.35));
+            // Boost immediate neighbors to fill gaps
+            if (prev1 > 25) this.data[prev1Offset + i] = Math.min(255, Math.floor(prev1 * 1.15));
+            if (next1 > 25) this.data[next1Offset + i] = Math.min(255, Math.floor(next1 * 1.15));
+            if (prev2 > 25) this.data[prev2Offset + i] = Math.min(255, Math.floor(prev2 * 1.1));
+            if (next2 > 25) this.data[next2Offset + i] = Math.min(255, Math.floor(next2 * 1.1));
+          } else if (wideMax > 50) {
+            // Some support - moderate boost
+            outputVal = Math.min(255, Math.floor(val * 1.2));
+          } else {
+            // Strong but isolated - suspicious, reduce
+            outputVal = Math.floor(val * 0.8);
+          }
+        } else if (val > 25) {
+          // Medium signal: needs good neighbor support
+          if (narrowSum > 80) {
+            // Good support - boost it
+            outputVal = Math.min(255, Math.floor(val * 1.2));
+          } else if (narrowMax > 40) {
+            // Some support - keep
+            outputVal = val;
+          } else {
+            // Isolated medium - likely scatter, punish hard
+            outputVal = Math.floor(val * 0.4);
+          }
+        } else if (val > 1) {
+          // Weak signal: kill it unless very well supported
+          if (narrowSum > 100) {
+            // Strong neighbors - this might be edge of real target
+            outputVal = val;
+          } else if (narrowMax > 60) {
+            // Next to something strong - keep faint
+            outputVal = Math.floor(val * 0.5);
+          } else {
+            // Isolated weak signal - kill it
+            outputVal = 0;
+          }
+        } else {
+          outputVal = val;
+        }
+
+        this.data[offset + i] = outputVal;
       }
     }
 
@@ -368,6 +480,50 @@ class render_webgpu {
         const labelX = this.center_x + (radius * 0.707);
         const labelY = this.center_y - (radius * 0.707);
         ctx.fillText(text, labelX + 5, labelY - 5);
+      }
+    }
+
+    // Draw degree markers around the 3rd range ring
+    const degreeRingRadius = (3 * this.beam_length) / 4;
+    const tickLength = 8;
+    const majorTickLength = 12;
+    ctx.font = "bold 12px/1 Verdana, Geneva, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+
+    for (let deg = 0; deg < 360; deg += 10) {
+      // Radar convention: 0° = bow (top), angles increase clockwise
+      // Canvas: 0 radians = right (3 o'clock), increases counter-clockwise
+      // So we need: canvasAngle = -deg + 90 (in degrees), or (90 - deg) * PI/180
+      const radians = ((90 - deg) * Math.PI) / 180;
+
+      const cos = Math.cos(radians);
+      const sin = Math.sin(radians);
+
+      // Determine tick length (longer for cardinal directions)
+      const isMajor = deg % 30 === 0;
+      const tick = isMajor ? majorTickLength : tickLength;
+
+      // Inner and outer points of tick mark
+      const innerRadius = degreeRingRadius - tick / 2;
+      const outerRadius = degreeRingRadius + tick / 2;
+
+      const x1 = this.center_x + innerRadius * cos;
+      const y1 = this.center_y - innerRadius * sin;
+      const x2 = this.center_x + outerRadius * cos;
+      const y2 = this.center_y - outerRadius * sin;
+
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+
+      // Draw degree labels at major ticks (every 30°)
+      if (isMajor) {
+        const labelRadius = degreeRingRadius + majorTickLength + 10;
+        const labelX = this.center_x + labelRadius * cos;
+        const labelY = this.center_y - labelRadius * sin;
+        ctx.fillText(deg.toString(), labelX, labelY);
       }
     }
   }
