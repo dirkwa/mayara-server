@@ -153,9 +153,11 @@ pub fn format_range_command(range_index: i32) -> String {
     format_command(CommandMode::Set, CommandId::Range, &[range_index, 0, 0])
 }
 
-/// Furuno range index table (index -> meters)
-/// Based on DRS4D-NXT documentation
-pub const RANGE_TABLE: [(i32, i32); 16] = [
+/// Furuno range index table (wire_index -> meters)
+/// Verified via Wireshark captures from TimeZero ↔ DRS4D-NXT
+/// Note: Wire indices are non-sequential (21 is min, 19 is out of order)
+pub const RANGE_TABLE: [(i32, i32); 18] = [
+    (21, 116),   // 1/16 nm = 116m (minimum range)
     (0, 231),    // 1/8 nm = 231m
     (1, 463),    // 1/4 nm = 463m
     (2, 926),    // 1/2 nm = 926m
@@ -170,8 +172,9 @@ pub const RANGE_TABLE: [(i32, i32); 16] = [
     (11, 22224), // 12 nm = 22224m
     (12, 29632), // 16 nm = 29632m
     (13, 44448), // 24 nm = 44448m
-    (14, 66672), // 36 nm = 66672m
-    (15, 88896), // 48 nm = 88896m
+    (14, 59264), // 32 nm = 59264m
+    (19, 66672), // 36 nm = 66672m (out of sequence!)
+    (15, 88896), // 48 nm = 88896m (maximum range)
 ];
 
 /// Convert range index to meters

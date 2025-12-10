@@ -11,26 +11,51 @@ const enabled_postfix = "_enabled";
 
 const RANGE_UNIT_SELECT_ID = 999;
 
-// Furuno DRS4D-NXT range table (nautical miles based)
-// Max range is 48nm per official spec sheet (12nm limit in dual-range mode)
+// Furuno DRS4D-NXT range table (meters, sorted by distance)
+// Verified via Wireshark captures from TimeZero ↔ DRS4D-NXT
+// Note: Wire indices are non-sequential - use RANGE_WIRE_INDEX for protocol
 const RANGE_TABLE = [
-  116,    // 0: 1/16 nm (0.0625 nm)
-  231,    // 1: 1/8 nm
-  463,    // 2: 1/4 nm
-  926,    // 3: 1/2 nm
-  1389,   // 4: 3/4 nm
-  1852,   // 5: 1 nm
-  2778,   // 6: 1.5 nm
-  3704,   // 7: 2 nm
-  5556,   // 8: 3 nm
-  7408,   // 9: 4 nm
-  11112,  // 10: 6 nm
-  14816,  // 11: 8 nm
-  22224,  // 12: 12 nm
-  29632,  // 13: 16 nm
-  44448,  // 14: 24 nm
-  66672,  // 15: 36 nm
-  88896,  // 16: 48 nm (max for DRS4D-NXT)
+  116,    // 0: 1/16 nm (wire index 21)
+  231,    // 1: 1/8 nm (wire index 0)
+  463,    // 2: 1/4 nm (wire index 1)
+  926,    // 3: 1/2 nm (wire index 2)
+  1389,   // 4: 3/4 nm (wire index 3)
+  1852,   // 5: 1 nm (wire index 4)
+  2778,   // 6: 1.5 nm (wire index 5)
+  3704,   // 7: 2 nm (wire index 6)
+  5556,   // 8: 3 nm (wire index 7)
+  7408,   // 9: 4 nm (wire index 8)
+  11112,  // 10: 6 nm (wire index 9)
+  14816,  // 11: 8 nm (wire index 10)
+  22224,  // 12: 12 nm (wire index 11)
+  29632,  // 13: 16 nm (wire index 12)
+  44448,  // 14: 24 nm (wire index 13)
+  59264,  // 15: 32 nm (wire index 14)
+  66672,  // 16: 36 nm (wire index 19 - out of sequence!)
+  88896,  // 17: 48 nm (wire index 15 - max for DRS4D-NXT)
+];
+
+// Wire protocol indices (array index here → wire index to send)
+// Maps RANGE_TABLE array index to Furuno protocol wire index
+const RANGE_WIRE_INDEX = [
+  21,  // 1/16 nm
+  0,   // 1/8 nm
+  1,   // 1/4 nm
+  2,   // 1/2 nm
+  3,   // 3/4 nm
+  4,   // 1 nm
+  5,   // 1.5 nm
+  6,   // 2 nm
+  7,   // 3 nm
+  8,   // 4 nm
+  9,   // 6 nm
+  10,  // 8 nm
+  11,  // 12 nm
+  12,  // 16 nm
+  13,  // 24 nm
+  14,  // 32 nm
+  19,  // 36 nm (out of sequence!)
+  15,  // 48 nm
 ];
 
 var myr_radar;
@@ -190,12 +215,18 @@ function findRangeIndex(meters) {
 function formatRange(meters) {
   const nm = meters / 1852;
   if (nm >= 1) {
+    // Handle fractional nm values like 1.5
+    if (nm % 1 !== 0 && nm < 2) {
+      return "1.5 nm";
+    }
     return Math.round(nm) + " nm";
-  } else if (nm >= 0.5) {
+  } else if (nm >= 0.7) {
+    return "3/4 nm";
+  } else if (nm >= 0.4) {
     return "1/2 nm";
-  } else if (nm >= 0.25) {
+  } else if (nm >= 0.2) {
     return "1/4 nm";
-  } else if (nm >= 0.125) {
+  } else if (nm >= 0.1) {
     return "1/8 nm";
   } else {
     return "1/16 nm";
