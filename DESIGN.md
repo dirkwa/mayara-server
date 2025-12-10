@@ -301,7 +301,7 @@ Radar Hardware
 - [x] Implement radar locator using mayara-core
 - [x] Register as SignalK Radar Provider
 - [x] FurunoController for direct TCP radar control
-- [ ] Test with real hardware
+- [x] Test with real hardware (DRS4D-NXT: transmit/standby verified)
 
 ### Phase 4: SignalK Radar API (separate PR)
 - [ ] Add RadarProvider interface to SignalK
@@ -503,6 +503,83 @@ fetch("/signalk/v2/api/vessels/self/radars")
 | Standalone         | mayara-server | Built-in      | mayara-server                 |
 | SignalK + external | mayara-server | mayara-webapp | mayara-server (via streamUrl) |
 | SignalK + WASM     | mayara-wasm   | mayara-webapp | SignalK proxy or external     |
+
+---
+
+## Furuno DRS4D-NXT Specifications
+
+Reference specifications from official Furuno documentation.
+
+### RF Transceiver
+
+| Parameter | Value |
+|-----------|-------|
+| **Frequency** | |
+| CH1 | 9380 MHz (P0N), 9400 MHz (Q0N) |
+| CH2 | 9400 MHz (P0N), 9420 MHz (Q0N) |
+| CH3 | 9420 MHz (P0N), 9440 MHz (Q0N) |
+| **Pulse Length & PRR** | |
+| P0N | 0.08μs to 1.2μs / 700 to 1100 Hz |
+| Q0N | 5μs to 18μs / 700 to 1100 Hz |
+
+### Antenna
+
+| Parameter | Value |
+|-----------|-------|
+| **Rotation Speed** | 24\*/36/48 rpm (range coupled) or 24 rpm fixed |
+| | \*In dual-range mode, speed is limited to 24 rpm |
+| **Beam Width** | |
+| Horizontal | 3.9° typical (-3 dB), adjustable 2° to 3.9° (RezBoost™) |
+| Vertical | 25° |
+
+### Range Scales
+
+| Range | Notes |
+|-------|-------|
+| 0.0625 nm (1/16 nm) | Minimum |
+| 0.125 nm (1/8 nm) | |
+| 0.25 nm (1/4 nm) | |
+| 0.5 nm (1/2 nm) | |
+| 0.75 nm (3/4 nm) | |
+| 1 nm | |
+| 1.5 nm | |
+| 2 nm | |
+| 3 nm | |
+| 4 nm | |
+| 6 nm | |
+| 8 nm | |
+| 12 nm | Max in dual-range mode |
+| 16 nm | |
+| 24 nm | |
+| 36 nm | |
+| 48 nm | Maximum |
+
+**Note**: In dual-range mode, range is limited to 12 nm.
+
+### Range Table (meters)
+
+Used in protocol commands and WASM plugin:
+
+```rust
+pub const RANGE_TABLE: [u32; 16] = [
+    231,    // 0: 1/8 nm
+    463,    // 1: 1/4 nm
+    926,    // 2: 1/2 nm
+    1389,   // 3: 3/4 nm
+    1852,   // 4: 1 nm
+    2778,   // 5: 1.5 nm
+    3704,   // 6: 2 nm
+    5556,   // 7: 3 nm
+    7408,   // 8: 4 nm
+    11112,  // 9: 6 nm
+    14816,  // 10: 8 nm
+    22224,  // 11: 12 nm
+    29632,  // 12: 16 nm
+    44448,  // 13: 24 nm
+    66672,  // 14: 36 nm
+    88896,  // 15: 48 nm (max)
+];
+```
 
 ---
 

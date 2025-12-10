@@ -380,6 +380,104 @@ pub extern "C" fn radar_set_gain(
     }
 }
 
+/// Set radar sea clutter
+/// Request: {"radarId": "...", "sea": {"auto": true, "value": 50}}
+/// Response: "true" or "false"
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub extern "C" fn radar_set_sea(
+    request_ptr: *const u8,
+    request_len: usize,
+    out_ptr: *mut u8,
+    out_max_len: usize,
+) -> i32 {
+    let request_str = match parse_request(request_ptr, request_len) {
+        Ok(s) => s,
+        Err(_) => return write_string("false", out_ptr, out_max_len),
+    };
+
+    #[derive(serde::Deserialize)]
+    struct SeaValue {
+        auto: bool,
+        value: Option<u8>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Request {
+        #[serde(rename = "radarId")]
+        radar_id: String,
+        sea: SeaValue,
+    }
+
+    let req: Request = match serde_json::from_str(&request_str) {
+        Ok(r) => r,
+        Err(_) => return write_string("false", out_ptr, out_max_len),
+    };
+
+    debug(&format!(
+        "radar_set_sea: {} -> auto={}, value={:?}",
+        req.radar_id, req.sea.auto, req.sea.value
+    ));
+
+    unsafe {
+        if let Some(ref mut provider) = PROVIDER {
+            let success = provider.set_sea(&req.radar_id, req.sea.auto, req.sea.value);
+            write_string(if success { "true" } else { "false" }, out_ptr, out_max_len)
+        } else {
+            write_string("false", out_ptr, out_max_len)
+        }
+    }
+}
+
+/// Set radar rain clutter
+/// Request: {"radarId": "...", "rain": {"auto": true, "value": 50}}
+/// Response: "true" or "false"
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub extern "C" fn radar_set_rain(
+    request_ptr: *const u8,
+    request_len: usize,
+    out_ptr: *mut u8,
+    out_max_len: usize,
+) -> i32 {
+    let request_str = match parse_request(request_ptr, request_len) {
+        Ok(s) => s,
+        Err(_) => return write_string("false", out_ptr, out_max_len),
+    };
+
+    #[derive(serde::Deserialize)]
+    struct RainValue {
+        auto: bool,
+        value: Option<u8>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Request {
+        #[serde(rename = "radarId")]
+        radar_id: String,
+        rain: RainValue,
+    }
+
+    let req: Request = match serde_json::from_str(&request_str) {
+        Ok(r) => r,
+        Err(_) => return write_string("false", out_ptr, out_max_len),
+    };
+
+    debug(&format!(
+        "radar_set_rain: {} -> auto={}, value={:?}",
+        req.radar_id, req.rain.auto, req.rain.value
+    ));
+
+    unsafe {
+        if let Some(ref mut provider) = PROVIDER {
+            let success = provider.set_rain(&req.radar_id, req.rain.auto, req.rain.value);
+            write_string(if success { "true" } else { "false" }, out_ptr, out_max_len)
+        } else {
+            write_string("false", out_ptr, out_max_len)
+        }
+    }
+}
+
 /// Set multiple radar controls at once
 /// Request: {"radarId": "...", "controls": {"power": "transmit", "range": 1000, ...}}
 /// Response: "true" or "false"

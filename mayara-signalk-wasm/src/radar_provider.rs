@@ -344,8 +344,23 @@ impl RadarProvider {
 
     /// Set radar range in meters
     pub fn set_range(&mut self, radar_id: &str, range: u32) -> bool {
-        debug(&format!("set_range({}, {})", radar_id, range));
+        debug(&format!("set_range({}, {}) - {} controllers registered",
+            radar_id, range, self.furuno_controllers.len()));
 
+        // For Furuno radars, use the direct TCP controller
+        if let Some(controller) = self.furuno_controllers.get_mut(radar_id) {
+            debug(&format!("Using FurunoController for {} (range={}m)", radar_id, range));
+
+            // Send announce packets immediately before TCP connection attempt
+            self.locator.send_furuno_announce();
+
+            controller.set_range(range);
+            return true;
+        }
+
+        debug(&format!("No FurunoController found for '{}', falling back to UDP", radar_id));
+
+        // Fallback to UDP for other radar types (requires mayara-server)
         if let Some(radar) = self.find_radar(radar_id) {
             let ip = radar.discovery.address.split(':').next().unwrap_or("127.0.0.1");
             let cmd = serde_json::json!({
@@ -364,6 +379,21 @@ impl RadarProvider {
     pub fn set_gain(&mut self, radar_id: &str, auto: bool, value: Option<u8>) -> bool {
         debug(&format!("set_gain({}, auto={}, value={:?})", radar_id, auto, value));
 
+        // For Furuno radars, use the direct TCP controller
+        if let Some(controller) = self.furuno_controllers.get_mut(radar_id) {
+            let val = value.unwrap_or(50) as i32;
+            debug(&format!("Using FurunoController for {} (gain={}, auto={})", radar_id, val, auto));
+
+            // Send announce packets immediately before TCP connection attempt
+            self.locator.send_furuno_announce();
+
+            controller.set_gain(val, auto);
+            return true;
+        }
+
+        debug(&format!("No FurunoController found for '{}', falling back to UDP", radar_id));
+
+        // Fallback to UDP for other radar types (requires mayara-server)
         if let Some(radar) = self.find_radar(radar_id) {
             let ip = radar.discovery.address.split(':').next().unwrap_or("127.0.0.1");
             let cmd = serde_json::json!({
@@ -375,6 +405,74 @@ impl RadarProvider {
             self.send_control_command(ip, &cmd)
         } else {
             debug(&format!("set_gain: radar {} not found", radar_id));
+            false
+        }
+    }
+
+    /// Set radar sea clutter
+    pub fn set_sea(&mut self, radar_id: &str, auto: bool, value: Option<u8>) -> bool {
+        debug(&format!("set_sea({}, auto={}, value={:?})", radar_id, auto, value));
+
+        // For Furuno radars, use the direct TCP controller
+        if let Some(controller) = self.furuno_controllers.get_mut(radar_id) {
+            let val = value.unwrap_or(50) as i32;
+            debug(&format!("Using FurunoController for {} (sea={}, auto={})", radar_id, val, auto));
+
+            // Send announce packets immediately before TCP connection attempt
+            self.locator.send_furuno_announce();
+
+            controller.set_sea(val, auto);
+            return true;
+        }
+
+        debug(&format!("No FurunoController found for '{}', falling back to UDP", radar_id));
+
+        // Fallback to UDP for other radar types (requires mayara-server)
+        if let Some(radar) = self.find_radar(radar_id) {
+            let ip = radar.discovery.address.split(':').next().unwrap_or("127.0.0.1");
+            let cmd = serde_json::json!({
+                "type": "set_sea",
+                "radarId": radar_id,
+                "auto": auto,
+                "value": value
+            });
+            self.send_control_command(ip, &cmd)
+        } else {
+            debug(&format!("set_sea: radar {} not found", radar_id));
+            false
+        }
+    }
+
+    /// Set radar rain clutter
+    pub fn set_rain(&mut self, radar_id: &str, auto: bool, value: Option<u8>) -> bool {
+        debug(&format!("set_rain({}, auto={}, value={:?})", radar_id, auto, value));
+
+        // For Furuno radars, use the direct TCP controller
+        if let Some(controller) = self.furuno_controllers.get_mut(radar_id) {
+            let val = value.unwrap_or(50) as i32;
+            debug(&format!("Using FurunoController for {} (rain={}, auto={})", radar_id, val, auto));
+
+            // Send announce packets immediately before TCP connection attempt
+            self.locator.send_furuno_announce();
+
+            controller.set_rain(val, auto);
+            return true;
+        }
+
+        debug(&format!("No FurunoController found for '{}', falling back to UDP", radar_id));
+
+        // Fallback to UDP for other radar types (requires mayara-server)
+        if let Some(radar) = self.find_radar(radar_id) {
+            let ip = radar.discovery.address.split(':').next().unwrap_or("127.0.0.1");
+            let cmd = serde_json::json!({
+                "type": "set_rain",
+                "radarId": radar_id,
+                "auto": auto,
+                "value": value
+            });
+            self.send_control_command(ip, &cmd)
+        } else {
+            debug(&format!("set_rain: radar {} not found", radar_id));
             false
         }
     }

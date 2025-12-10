@@ -541,12 +541,35 @@ fn decode_encoding_3(data: &[u8], prev_spoke: &[u8], sweep_len: usize) -> (Vec<u
     (spoke, used)
 }
 
-/// Standard Furuno range table (in meters)
+/// Standard Furuno DRS-NXT range table (in meters)
 /// Index 0-23 correspond to range_index values
+/// Based on nautical mile increments: 1/8, 1/4, 1/2, 3/4, 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 36, 48 nm
+/// 1 nautical mile = 1852 meters
 pub const RANGE_TABLE: [u32; 24] = [
-    125, 250, 500, 750, 1500, 3000, 6000, 12000,
-    24000, 36000, 48000, 64000, 72000, 96000, 128000, 192000,
-    256000, 384000, 512000, 768000, 1024000, 1536000, 2048000, 3072000,
+    231,    // 0: 1/8 nm
+    463,    // 1: 1/4 nm
+    926,    // 2: 1/2 nm
+    1389,   // 3: 3/4 nm
+    1852,   // 4: 1 nm
+    2778,   // 5: 1.5 nm
+    3704,   // 6: 2 nm
+    5556,   // 7: 3 nm
+    7408,   // 8: 4 nm
+    11112,  // 9: 6 nm
+    14816,  // 10: 8 nm
+    22224,  // 11: 12 nm
+    29632,  // 12: 16 nm
+    44448,  // 13: 24 nm
+    66672,  // 14: 36 nm
+    88896,  // 15: 48 nm
+    133344, // 16: 72 nm (extrapolated)
+    177792, // 17: 96 nm
+    222240, // 18: 120 nm
+    296320, // 19: 160 nm
+    370400, // 20: 200 nm
+    444480, // 21: 240 nm
+    592640, // 22: 320 nm
+    740800, // 23: 400 nm
 ];
 
 /// Get range in meters from range index

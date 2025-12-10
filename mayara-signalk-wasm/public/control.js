@@ -1,9 +1,9 @@
-export { loadRadar, registerRadarCallback, registerControlCallback };
+export { loadRadar, registerRadarCallback, registerControlCallback, setCurrentRange };
 
 import van from "./van-1.5.2.js";
 import { fetchRadars, detectMode, sendControlCommand } from "./api.js";
 
-const { div, label, input, button, select, option } = van.tags;
+const { div, label, input, button, select, option, span } = van.tags;
 
 const prefix = "myr_";
 const auto_postfix = "_auto";
@@ -11,9 +11,32 @@ const enabled_postfix = "_enabled";
 
 const RANGE_UNIT_SELECT_ID = 999;
 
+// Furuno DRS4D-NXT range table (nautical miles based)
+// Max range is 48nm per official spec sheet (12nm limit in dual-range mode)
+const RANGE_TABLE = [
+  116,    // 0: 1/16 nm (0.0625 nm)
+  231,    // 1: 1/8 nm
+  463,    // 2: 1/4 nm
+  926,    // 3: 1/2 nm
+  1389,   // 4: 3/4 nm
+  1852,   // 5: 1 nm
+  2778,   // 6: 1.5 nm
+  3704,   // 7: 2 nm
+  5556,   // 8: 3 nm
+  7408,   // 9: 4 nm
+  11112,  // 10: 6 nm
+  14816,  // 11: 8 nm
+  22224,  // 12: 12 nm
+  29632,  // 13: 16 nm
+  44448,  // 14: 24 nm
+  66672,  // 15: 36 nm
+  88896,  // 16: 48 nm (max for DRS4D-NXT)
+];
+
 var myr_radar;
 var myr_controls;
 var myr_range_control_id;
+var myr_current_range = 1852; // Default 1nm
 var myr_webSocket;
 var myr_error_message;
 var myr_no_response_timeout;
@@ -147,6 +170,323 @@ function buildPowerButtons(container) {
   );
 
   van.add(container, powerDiv);
+}
+
+// Find closest range index in RANGE_TABLE
+function findRangeIndex(meters) {
+  let closest = 0;
+  let minDiff = Math.abs(RANGE_TABLE[0] - meters);
+  for (let i = 1; i < RANGE_TABLE.length; i++) {
+    const diff = Math.abs(RANGE_TABLE[i] - meters);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closest = i;
+    }
+  }
+  return closest;
+}
+
+// Format range value for display
+function formatRange(meters) {
+  const nm = meters / 1852;
+  if (nm >= 1) {
+    return Math.round(nm) + " nm";
+  } else if (nm >= 0.5) {
+    return "1/2 nm";
+  } else if (nm >= 0.25) {
+    return "1/4 nm";
+  } else if (nm >= 0.125) {
+    return "1/8 nm";
+  } else {
+    return "1/16 nm";
+  }
+}
+
+// Send range command via REST API
+async function sendRangeCommand(meters) {
+  if (!myr_radar) return;
+
+  const url = `/signalk/v2/api/vessels/self/radars/${myr_radar.id}/range`;
+  const body = { value: meters };
+
+  console.log(`Range command: PUT ${url}`, body);
+
+  try {
+    const response = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    if (response.ok) {
+      console.log(`Range set to ${meters}m`);
+      myr_current_range = meters;
+      updateRangeDisplay();
+    } else {
+      console.error(`Range command failed: ${response.status}`);
+    }
+  } catch (e) {
+    console.error(`Range command error: ${e}`);
+  }
+}
+
+function rangeUp() {
+  const currentIndex = findRangeIndex(myr_current_range);
+  if (currentIndex < RANGE_TABLE.length - 1) {
+    sendRangeCommand(RANGE_TABLE[currentIndex + 1]);
+  }
+}
+
+function rangeDown() {
+  const currentIndex = findRangeIndex(myr_current_range);
+  if (currentIndex > 0) {
+    sendRangeCommand(RANGE_TABLE[currentIndex - 1]);
+  }
+}
+
+function updateRangeDisplay() {
+  const display = document.getElementById("myr_range_display");
+  if (display) {
+    display.textContent = formatRange(myr_current_range);
+  }
+}
+
+// Called from viewer.js when spoke data contains range
+function setCurrentRange(meters) {
+  if (meters > 0 && meters !== myr_current_range) {
+    myr_current_range = meters;
+    updateRangeDisplay();
+  }
+}
+
+function buildRangeButtons(container) {
+  const rangeDiv = div(
+    { class: "myr_range_buttons" },
+    button(
+      {
+        type: "button",
+        class: "myr_range_button",
+        onclick: () => rangeDown(),
+      },
+      "Range -"
+    ),
+    button(
+      {
+        type: "button",
+        class: "myr_range_button",
+        onclick: () => rangeUp(),
+      },
+      "Range +"
+    )
+  );
+
+  van.add(container, rangeDiv);
+}
+
+// Gain/Sea/Rain slider state
+var myr_gain_value = 50;
+var myr_gain_auto = false;
+var myr_sea_value = 50;
+var myr_sea_auto = false;
+var myr_rain_value = 50;
+var myr_rain_auto = false;
+
+// Send gain command via REST API
+async function sendGainCommand(value, auto) {
+  if (!myr_radar) return;
+
+  const url = `/signalk/v2/api/vessels/self/radars/${myr_radar.id}/gain`;
+  const body = { auto: auto, value: auto ? undefined : value };
+
+  console.log(`Gain command: PUT ${url}`, body);
+
+  try {
+    const response = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    if (response.ok) {
+      console.log(`Gain set: auto=${auto}, value=${value}`);
+      myr_gain_value = value;
+      myr_gain_auto = auto;
+    } else {
+      console.error(`Gain command failed: ${response.status}`);
+    }
+  } catch (e) {
+    console.error(`Gain command error: ${e}`);
+  }
+}
+
+// Send sea command via REST API
+async function sendSeaCommand(value, auto) {
+  if (!myr_radar) return;
+
+  const url = `/signalk/v2/api/vessels/self/radars/${myr_radar.id}/sea`;
+  const body = { auto: auto, value: auto ? undefined : value };
+
+  console.log(`Sea command: PUT ${url}`, body);
+
+  try {
+    const response = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    if (response.ok) {
+      console.log(`Sea set: auto=${auto}, value=${value}`);
+      myr_sea_value = value;
+      myr_sea_auto = auto;
+    } else {
+      console.error(`Sea command failed: ${response.status}`);
+    }
+  } catch (e) {
+    console.error(`Sea command error: ${e}`);
+  }
+}
+
+// Send rain command via REST API
+async function sendRainCommand(value, auto) {
+  if (!myr_radar) return;
+
+  const url = `/signalk/v2/api/vessels/self/radars/${myr_radar.id}/rain`;
+  const body = { auto: auto, value: auto ? undefined : value };
+
+  console.log(`Rain command: PUT ${url}`, body);
+
+  try {
+    const response = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    if (response.ok) {
+      console.log(`Rain set: auto=${auto}, value=${value}`);
+      myr_rain_value = value;
+      myr_rain_auto = auto;
+    } else {
+      console.error(`Rain command failed: ${response.status}`);
+    }
+  } catch (e) {
+    console.error(`Rain command error: ${e}`);
+  }
+}
+
+function buildClutterControls(container) {
+  // Gain control
+  const gainDiv = div(
+    { class: "myr_clutter_control" },
+    div(
+      { class: "myr_clutter_header" },
+      span({ class: "myr_clutter_label" }, "Gain"),
+      label({ class: "myr_auto_checkbox" },
+        input({
+          type: "checkbox",
+          id: "myr_gain_auto",
+          checked: myr_gain_auto,
+          onchange: (e) => {
+            myr_gain_auto = e.target.checked;
+            const slider = document.getElementById("myr_gain_slider");
+            slider.disabled = myr_gain_auto;
+            sendGainCommand(myr_gain_value, myr_gain_auto);
+          },
+        }),
+        " Auto"
+      )
+    ),
+    input({
+      type: "range",
+      id: "myr_gain_slider",
+      class: "myr_clutter_slider",
+      min: 0,
+      max: 100,
+      value: myr_gain_value,
+      disabled: myr_gain_auto,
+      onchange: (e) => {
+        myr_gain_value = parseInt(e.target.value);
+        sendGainCommand(myr_gain_value, myr_gain_auto);
+      },
+    })
+  );
+
+  // Sea control
+  const seaDiv = div(
+    { class: "myr_clutter_control" },
+    div(
+      { class: "myr_clutter_header" },
+      span({ class: "myr_clutter_label" }, "Sea"),
+      label({ class: "myr_auto_checkbox" },
+        input({
+          type: "checkbox",
+          id: "myr_sea_auto",
+          checked: myr_sea_auto,
+          onchange: (e) => {
+            myr_sea_auto = e.target.checked;
+            const slider = document.getElementById("myr_sea_slider");
+            slider.disabled = myr_sea_auto;
+            sendSeaCommand(myr_sea_value, myr_sea_auto);
+          },
+        }),
+        " Auto"
+      )
+    ),
+    input({
+      type: "range",
+      id: "myr_sea_slider",
+      class: "myr_clutter_slider",
+      min: 0,
+      max: 100,
+      value: myr_sea_value,
+      disabled: myr_sea_auto,
+      onchange: (e) => {
+        myr_sea_value = parseInt(e.target.value);
+        sendSeaCommand(myr_sea_value, myr_sea_auto);
+      },
+    })
+  );
+
+  // Rain control
+  const rainDiv = div(
+    { class: "myr_clutter_control" },
+    div(
+      { class: "myr_clutter_header" },
+      span({ class: "myr_clutter_label" }, "Rain"),
+      label({ class: "myr_auto_checkbox" },
+        input({
+          type: "checkbox",
+          id: "myr_rain_auto",
+          checked: myr_rain_auto,
+          onchange: (e) => {
+            myr_rain_auto = e.target.checked;
+            const slider = document.getElementById("myr_rain_slider");
+            slider.disabled = myr_rain_auto;
+            sendRainCommand(myr_rain_value, myr_rain_auto);
+          },
+        }),
+        " Auto"
+      )
+    ),
+    input({
+      type: "range",
+      id: "myr_rain_slider",
+      class: "myr_clutter_slider",
+      min: 0,
+      max: 100,
+      value: myr_rain_value,
+      disabled: myr_rain_auto,
+      onchange: (e) => {
+        myr_rain_value = parseInt(e.target.value);
+        sendRainCommand(myr_rain_value, myr_rain_auto);
+      },
+    })
+  );
+
+  van.add(container, gainDiv);
+  van.add(container, seaDiv);
+  van.add(container, rainDiv);
 }
 
 const AutoButton = (id) =>
@@ -426,37 +766,11 @@ function buildControls() {
   // Add power buttons at the top
   buildPowerButtons(c);
 
-  for (const [k, v] of Object.entries(myr_controls)) {
-    if (v["isReadOnly"]) {
-      if (k == 0) {
-        van.add(c, div({ class: "myr_control myr_error" }, "REPLAY MODE"));
-      }
-      van.add(c, ReadOnlyValue(k, v.name));
-    } else if (v["dataType"] == "button") {
-      van.add(c, ButtonValue(k, v.name));
-    } else if (v["dataType"] == "string") {
-      van.add(c, StringValue(k, v.name));
-      van.add(get_element_by_server_id(k).parentNode, SetButton());
-    } else if ("validValues" in v && "descriptions" in v) {
-      if (v.name == "Range") {
-        add_range_unit_select(c, v["descriptions"]);
-      }
-      van.add(c, SelectValue(k, v.name, v["validValues"], v["descriptions"]));
-    } else if ("maxValue" in v && v.maxValue <= 100) {
-      van.add(
-        c,
-        RangeValue(k, v.name, v.minValue, v.maxValue, 0, "descriptions" in v)
-      );
-    } else {
-      van.add(c, NumericValue(k, v.name));
-    }
-    if (v["hasAuto"]) {
-      van.add(get_element_by_server_id(k).parentNode, AutoButton(k));
-    }
-    if (v["hasEnabled"] && !v["isReadOnly"]) {
-      van.add(get_element_by_server_id(k).parentNode, EnabledButton(k));
-    }
-  }
+  // Add range +/- buttons
+  buildRangeButtons(c);
+
+  // Add gain/sea/rain sliders
+  buildClutterControls(c);
 }
 
 function add_range_unit_select(c, descriptions) {

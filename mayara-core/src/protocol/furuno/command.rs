@@ -153,6 +153,42 @@ pub fn format_range_command(range_index: i32) -> String {
     format_command(CommandMode::Set, CommandId::Range, &[range_index, 0, 0])
 }
 
+/// Furuno range index table (index -> meters)
+/// Based on DRS4D-NXT documentation
+pub const RANGE_TABLE: [(i32, i32); 16] = [
+    (0, 231),    // 1/8 nm = 231m
+    (1, 463),    // 1/4 nm = 463m
+    (2, 926),    // 1/2 nm = 926m
+    (3, 1389),   // 3/4 nm = 1389m
+    (4, 1852),   // 1 nm = 1852m
+    (5, 2778),   // 1.5 nm = 2778m
+    (6, 3704),   // 2 nm = 3704m
+    (7, 5556),   // 3 nm = 5556m
+    (8, 7408),   // 4 nm = 7408m
+    (9, 11112),  // 6 nm = 11112m
+    (10, 14816), // 8 nm = 14816m
+    (11, 22224), // 12 nm = 22224m
+    (12, 29632), // 16 nm = 29632m
+    (13, 44448), // 24 nm = 44448m
+    (14, 66672), // 36 nm = 66672m
+    (15, 88896), // 48 nm = 88896m
+];
+
+/// Convert range index to meters
+pub fn range_index_to_meters(index: i32) -> Option<i32> {
+    RANGE_TABLE.iter()
+        .find(|(idx, _)| *idx == index)
+        .map(|(_, meters)| *meters)
+}
+
+/// Convert meters to closest range index
+pub fn meters_to_range_index(meters: i32) -> i32 {
+    RANGE_TABLE.iter()
+        .min_by_key(|(_, m)| (m - meters).abs())
+        .map(|(idx, _)| *idx)
+        .unwrap_or(4) // Default to 1nm
+}
+
 /// Format gain command
 ///
 /// # Arguments
@@ -160,32 +196,40 @@ pub fn format_range_command(range_index: i32) -> String {
 /// * `auto` - true for automatic gain control
 ///
 /// # Returns
-/// Formatted command: `$S63,0,{value},{auto},{value},0\r\n`
+/// Formatted command: `$S63,{auto},{value},0,80,0\r\n`
+/// Based on pcap: `$S63,0,50,0,80,0` (manual, value=50)
 pub fn format_gain_command(value: i32, auto: bool) -> String {
     let auto_val = if auto { 1 } else { 0 };
-    format_command(CommandMode::Set, CommandId::Gain, &[0, value, auto_val, value, 0])
+    // From pcap: $S63,{auto},{value},0,80,0
+    format_command(CommandMode::Set, CommandId::Gain, &[auto_val, value, 0, 80, 0])
 }
 
 /// Format sea clutter command
 ///
 /// # Arguments
-/// * `value` - Sea clutter value
+/// * `value` - Sea clutter value (0-100)
+/// * `auto` - true for automatic sea clutter control
 ///
 /// # Returns
-/// Formatted command: `$S64,{value}\r\n`
-pub fn format_sea_command(value: i32) -> String {
-    format_command(CommandMode::Set, CommandId::Sea, &[value])
+/// Formatted command: `$S64,{auto},{value},50,0,0,0\r\n`
+/// Based on pcap: `$S64,{auto},{value},50,0,0,0`
+pub fn format_sea_command(value: i32, auto: bool) -> String {
+    let auto_val = if auto { 1 } else { 0 };
+    format_command(CommandMode::Set, CommandId::Sea, &[auto_val, value, 50, 0, 0, 0])
 }
 
 /// Format rain clutter command
 ///
 /// # Arguments
-/// * `value` - Rain clutter value
+/// * `value` - Rain clutter value (0-100)
+/// * `auto` - true for automatic rain clutter control
 ///
 /// # Returns
-/// Formatted command: `$S65,0,{value}\r\n`
-pub fn format_rain_command(value: i32) -> String {
-    format_command(CommandMode::Set, CommandId::Rain, &[0, value])
+/// Formatted command: `$S65,{auto},{value},0,0,0,0\r\n`
+/// Based on pcap: `$S65,{auto},{value},0,0,0,0`
+pub fn format_rain_command(value: i32, auto: bool) -> String {
+    let auto_val = if auto { 1 } else { 0 };
+    format_command(CommandMode::Set, CommandId::Rain, &[auto_val, value, 0, 0, 0, 0])
 }
 
 /// Format keep-alive (alive check) command
@@ -292,13 +336,13 @@ mod tests {
     #[test]
     fn test_format_gain_manual() {
         let cmd = format_gain_command(75, false);
-        assert_eq!(cmd, "$S63,0,75,0,75,0\r\n");
+        assert_eq!(cmd, "$S63,0,75,0,80,0\r\n");
     }
 
     #[test]
     fn test_format_gain_auto() {
         let cmd = format_gain_command(50, true);
-        assert_eq!(cmd, "$S63,0,50,1,50,0\r\n");
+        assert_eq!(cmd, "$S63,1,50,0,80,0\r\n");
     }
 
     #[test]
@@ -332,5 +376,29 @@ mod tests {
         assert_eq!(parse_status_response("$N69,2,0,0,60,300,0"), Some(true));
         assert_eq!(parse_status_response("$N69,1,0,0,60,300,0"), Some(false));
         assert_eq!(parse_status_response("$N62,5,0,0"), None); // Wrong command
+    }
+
+    #[test]
+    fn test_format_sea_manual() {
+        let cmd = format_sea_command(60, false);
+        assert_eq!(cmd, "$S64,0,60,50,0,0,0\r\n");
+    }
+
+    #[test]
+    fn test_format_sea_auto() {
+        let cmd = format_sea_command(50, true);
+        assert_eq!(cmd, "$S64,1,50,50,0,0,0\r\n");
+    }
+
+    #[test]
+    fn test_format_rain_manual() {
+        let cmd = format_rain_command(30, false);
+        assert_eq!(cmd, "$S65,0,30,0,0,0,0\r\n");
+    }
+
+    #[test]
+    fn test_format_rain_auto() {
+        let cmd = format_rain_command(25, true);
+        assert_eq!(cmd, "$S65,1,25,0,0,0,0\r\n");
     }
 }

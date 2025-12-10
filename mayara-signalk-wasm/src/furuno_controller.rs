@@ -5,7 +5,9 @@
 
 use crate::signalk_ffi::{debug, TcpSocket};
 use mayara_core::protocol::furuno::command::{
-    format_keepalive, format_status_command, parse_login_response, LOGIN_MESSAGE,
+    format_gain_command, format_keepalive, format_rain_command, format_range_command,
+    format_sea_command, format_status_command, meters_to_range_index, parse_login_response,
+    LOGIN_MESSAGE,
 };
 use mayara_core::protocol::furuno::{BASE_PORT, BEACON_PORT};
 
@@ -116,6 +118,97 @@ impl FurunoController {
             self.send_command(cmd);
         } else {
             // Queue the command and start connection
+            self.pending_command = Some(cmd.to_string());
+            if self.state == ControllerState::Disconnected {
+                self.start_login();
+            }
+        }
+    }
+
+    /// Set radar range in meters
+    pub fn set_range(&mut self, range_meters: u32) {
+        let range_index = meters_to_range_index(range_meters as i32);
+        let cmd = format_range_command(range_index);
+        // Remove trailing \r\n since send_line adds it
+        let cmd = cmd.trim_end_matches('\n').trim_end_matches('\r');
+        debug(&format!(
+            "[{}] Queueing range command: {} (index {} for {}m)",
+            self.radar_id, cmd, range_index, range_meters
+        ));
+
+        if self.is_connected() {
+            self.send_command(cmd);
+        } else {
+            // Queue the command and start connection
+            self.pending_command = Some(cmd.to_string());
+            if self.state == ControllerState::Disconnected {
+                self.start_login();
+            }
+        }
+    }
+
+    /// Set radar gain
+    ///
+    /// # Arguments
+    /// * `value` - Gain value (0-100)
+    /// * `auto` - true for automatic gain control
+    pub fn set_gain(&mut self, value: i32, auto: bool) {
+        let cmd = format_gain_command(value, auto);
+        let cmd = cmd.trim_end_matches('\n').trim_end_matches('\r');
+        debug(&format!(
+            "[{}] Queueing gain command: {} (value={}, auto={})",
+            self.radar_id, cmd, value, auto
+        ));
+
+        if self.is_connected() {
+            self.send_command(cmd);
+        } else {
+            self.pending_command = Some(cmd.to_string());
+            if self.state == ControllerState::Disconnected {
+                self.start_login();
+            }
+        }
+    }
+
+    /// Set radar sea clutter
+    ///
+    /// # Arguments
+    /// * `value` - Sea clutter value (0-100)
+    /// * `auto` - true for automatic sea clutter control
+    pub fn set_sea(&mut self, value: i32, auto: bool) {
+        let cmd = format_sea_command(value, auto);
+        let cmd = cmd.trim_end_matches('\n').trim_end_matches('\r');
+        debug(&format!(
+            "[{}] Queueing sea command: {} (value={}, auto={})",
+            self.radar_id, cmd, value, auto
+        ));
+
+        if self.is_connected() {
+            self.send_command(cmd);
+        } else {
+            self.pending_command = Some(cmd.to_string());
+            if self.state == ControllerState::Disconnected {
+                self.start_login();
+            }
+        }
+    }
+
+    /// Set radar rain clutter
+    ///
+    /// # Arguments
+    /// * `value` - Rain clutter value (0-100)
+    /// * `auto` - true for automatic rain clutter control
+    pub fn set_rain(&mut self, value: i32, auto: bool) {
+        let cmd = format_rain_command(value, auto);
+        let cmd = cmd.trim_end_matches('\n').trim_end_matches('\r');
+        debug(&format!(
+            "[{}] Queueing rain command: {} (value={}, auto={})",
+            self.radar_id, cmd, value, auto
+        ));
+
+        if self.is_connected() {
+            self.send_command(cmd);
+        } else {
             self.pending_command = Some(cmd.to_string());
             if self.state == ControllerState::Disconnected {
                 self.start_login();

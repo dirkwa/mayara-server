@@ -6,6 +6,7 @@ import {
   loadRadar,
   registerRadarCallback,
   registerControlCallback,
+  setCurrentRange,
 } from "./control.js";
 import "./protobuf/protobuf.min.js";
 
@@ -227,6 +228,10 @@ function radarLoaded(r) {
           }
           renderer.drawSpoke(spoke);
           prev_angle = spoke.angle;
+          // Update range display from spoke data
+          if (spoke.range) {
+            setCurrentRange(spoke.range);
+          }
         }
         renderer.render();
       }
