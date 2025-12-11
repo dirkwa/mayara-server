@@ -1,4 +1,4 @@
-# SignalK Radar API v2 Proposal
+# SignalK Radar API v3 Proposal
 
 ## Overview
 
