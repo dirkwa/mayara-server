@@ -1,6 +1,6 @@
 export { render_webgpu };
 
-import { RANGE_SCALE, formatRangeValue, is_metric } from "./viewer.js";
+import { RANGE_SCALE, formatRangeValue, is_metric, getHeadingMode, getTrueHeading } from "./viewer.js";
 
 class render_webgpu {
   constructor(canvas_dom, canvas_background_dom, drawBackground) {
@@ -21,6 +21,9 @@ class render_webgpu {
     this.rotationCount = 0;
     this.lastSpokeAngle = -1;
     this.fillRotations = 4; // Number of rotations to use neighbor enhancement
+
+    // Heading rotation for North Up mode (in radians)
+    this.headingRotation = 0;
 
     // Start async initialization
     this.initPromise = this.#initWebGPU();
@@ -159,6 +162,13 @@ class render_webgpu {
       this.data.fill(0);
     }
     this.redrawCanvas();
+  }
+
+  setHeadingRotation(radians) {
+    this.headingRotation = radians;
+    if (this.ready) {
+      this.#updateUniforms();
+    }
   }
 
   setLegend(l) {
@@ -483,7 +493,7 @@ class render_webgpu {
       }
     }
 
-    // Draw degree markers around the 3rd range ring
+    // Draw degree markers (compass rose) around the 3rd range ring
     const degreeRingRadius = (3 * this.beam_length) / 4;
     const tickLength = 8;
     const majorTickLength = 12;
@@ -491,11 +501,23 @@ class render_webgpu {
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
 
+    // Get heading mode and true heading for compass rose rotation
+    const headingMode = getHeadingMode();
+    const trueHeadingRad = getTrueHeading();
+    const trueHeadingDeg = (trueHeadingRad * 180) / Math.PI;
+
+    // In Heading Up mode: compass rose rotates so heading is at top
+    // In North Up mode: compass rose stays fixed with 0 (N) at top
+    const roseRotationDeg = headingMode === "headingUp" ? -trueHeadingDeg : 0;
+
     for (let deg = 0; deg < 360; deg += 10) {
-      // Radar convention: 0° = bow (top), angles increase clockwise
+      // Apply compass rose rotation
+      const displayDeg = deg + roseRotationDeg;
+
+      // Radar convention: 0° = top, angles increase clockwise
       // Canvas: 0 radians = right (3 o'clock), increases counter-clockwise
-      // So we need: canvasAngle = -deg + 90 (in degrees), or (90 - deg) * PI/180
-      const radians = ((90 - deg) * Math.PI) / 180;
+      // So we need: canvasAngle = -displayDeg + 90 (in degrees), or (90 - displayDeg) * PI/180
+      const radians = ((90 - displayDeg) * Math.PI) / 180;
 
       const cos = Math.cos(radians);
       const sin = Math.sin(radians);
@@ -526,6 +548,15 @@ class render_webgpu {
         ctx.fillText(deg.toString(), labelX, labelY);
       }
     }
+
+    // Draw North indicator (N) at 0° position
+    const northDeg = roseRotationDeg; // Where 0° (North) appears on screen
+    const northRadians = ((90 - northDeg) * Math.PI) / 180;
+    const northRadius = degreeRingRadius + majorTickLength + 25;
+    const northX = this.center_x + northRadius * Math.cos(northRadians);
+    const northY = this.center_y - northRadius * Math.sin(northRadians);
+    ctx.font = "bold 14px/1 Verdana, Geneva, sans-serif";
+    ctx.fillText("N", northX, northY);
   }
 
   #updateUniforms() {
@@ -535,12 +566,13 @@ class render_webgpu {
     const scaleX = scale * ((2 * this.beam_length) / this.width);
     const scaleY = scale * ((2 * this.beam_length) / this.height);
 
-    // Pack uniforms: scaleX, scaleY, spokesPerRev, maxSpokeLen
+    // Pack uniforms: scaleX, scaleY, spokesPerRev, maxSpokeLen, headingRotation
     const uniforms = new Float32Array([
       scaleX, scaleY,
       this.spokesPerRevolution || 2048,
       this.max_spoke_len || 512,
-      0, 0, 0, 0  // padding to 32 bytes
+      this.headingRotation || 0,  // Heading rotation in radians (for North Up mode)
+      0, 0, 0  // padding to 32 bytes
     ]);
 
     this.device.queue.writeBuffer(this.uniformBuffer, 0, uniforms);
@@ -567,6 +599,7 @@ struct Uniforms {
   scaleY: f32,
   spokesPerRev: f32,
   maxSpokeLen: f32,
+  headingRotation: f32,  // Rotation in radians for North Up mode
 }
 
 @group(0) @binding(3) var<uniform> uniforms: Uniforms;
@@ -619,8 +652,17 @@ fn fragmentMain(@location(0) texCoord: vec2<f32>) -> @location(0) vec4<f32> {
   // - Bottom: (0, -0.5)  -> atan2(0, -0.5) = PI
   // - Left:   (-0.5, 0)  -> atan2(-0.5, 0) = -PI/2 -> normalized to 3PI/2
   var theta = atan2(centered.x, centered.y);
+
+  // Apply heading rotation for North Up mode
+  // In North Up: we rotate the radar image by -heading, so we add heading to theta
+  // This samples the spoke data at (theta + heading), effectively rotating the display
+  theta = theta - uniforms.headingRotation;
+
   if (theta < 0.0) {
     theta = theta + TWO_PI;
+  }
+  if (theta >= TWO_PI) {
+    theta = theta - TWO_PI;
   }
 
   // Normalize to [0, 1] for texture V coordinate
