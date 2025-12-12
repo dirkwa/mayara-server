@@ -22,6 +22,19 @@ Furuno radars operate on a dedicated network subnet, typically `172.31.0.0/16`.
 
 ## Device Discovery (UDP Port 10010)
 
+### Beacon Command IDs
+
+| ID | Size | Description |
+|----|------|-------------|
+| 0x00 | 36 | Device announce with name (e.g., MF003054, RD003212) |
+| 0x01 | 16 | Beacon request |
+| 0x0f | 170 | Model info response (MAC, name, firmware, serial) |
+| 0x14 | 16 | Model info request |
+| 0x15 | 16 | Unknown request |
+| 0x17 | 25 | Identify with MAC address |
+| 0x18 | 16 | Unknown request |
+| 0x1b | 40 | Status with MAC address + flags |
+
 ### Beacon Request Packet (16 bytes)
 Sent by clients to request radar beacons:
 ```
@@ -779,33 +792,327 @@ Offset 0x90-0xA9: Serial number (26 bytes)
 
 **Note**: In practice, the device name field at offset 0x30 may be empty or contain different data depending on the radar model and firmware. The TCP `$N96` command is more reliable.
 
-### Operating Hours ($R8E / $N8E)
+### Operating Hours ($R8E, $R8F)
 
-Request the total operating time (transmitter on-time):
+Two separate counters track radar usage:
+
+**Total Power-On Time (0x8E):**
+```
+$R8E,0
+$N8E,{seconds}
+```
+
+**Total Transmit Time (0x8F):**
+```
+$R8F,0
+$N8F,{seconds}
+```
+
+Example from DRS4D-NXT:
+```
+$N8E,83777400    # 83777400 / 3600 = 23,271 hours powered on
+$N8F,8302680     # 8302680 / 3600 = 2,306 hours transmitting
+```
+
+This shows the radar was powered on for 23,271 hours but only actively transmitting for 2,306 hours (~10% duty cycle).
+
+### Named Parameters ($R00 / $N00)
+
+Query named diagnostic parameters:
+
+**Fan Status:**
+```
+$R00,Fan1Status,
+$R00,Fan2Status,
+$R00,Fan3Status,
+$N00,Fan1Status,0    # 0 = OK
+$N00,Fan2Status,0
+$N00,Fan3Status,0
+```
+
+**Other observed:**
+```
+$N00,TILEEAV,0       # Unknown (tile-related?)
+```
+
+### Main Bang Auto-Adjustment
+
+The radar automatically adjusts main bang suppression based on range. The second parameter in `$N83` responses changes:
+
+| Range Index | Range | MBS Level |
+|-------------|-------|-----------|
+| 21, 0-2 | 1/16nm - 1/2nm | 0 |
+| 3-4 | 3/4nm - 1nm | 1 |
+| 5-6 | 1.5nm - 2nm | 2 |
+| 7-8 | 3nm - 4nm | 3 |
+| 9-11 | 6nm - 12nm | 4 |
+| 12+ | 16nm+ | 5 |
+
+Example sequence when changing range:
+```
+$S62,5,0,0       # Set range to 1.5nm
+$N62,5,0,0
+$N83,128,2       # MBS automatically set to level 2
+```
+
+### Dual-Screen Response Echo
+
+When setting clutter controls (Gain/Sea/Rain), the radar confirms for BOTH screens:
+
+```
+$S63,0,50,0,80,0     # Set gain to 50, manual
+$N63,0,50,0,80,0     # Screen 0 confirmed
+$N63,0,50,1,80,0     # Screen 1 also echoed
+$NE0,0,0,0,50,0,0,0,1   # Clutter status screen 0
+$NE0,1,0,0,50,0,0,0,1   # Clutter status screen 1 (param 1 = screen)
+```
+
+### Screen Wildcard Queries
+
+Use `-2` as the screen parameter to query all screens:
+
+```
+$R63,0,0,0,0,-2     # Request gain for all screens
+$R64,0,0,0,0,0,-2   # Request sea for all screens
+$R65,0,0,0,0,-2,0   # Request rain for all screens
+$RE0,0,-2,0,0,0,0,0,0   # Request clutter status all screens
+```
+
+## State Query Commands
+
+All control values can be queried using `$R` (Request) commands. The radar responds with `$N` (New) containing the current value.
+
+### Query Command Summary
+
+| Command | Request | Response | Description |
+|---------|---------|----------|-------------|
+| Status | `$R69` | `$N69,{status},0,0,60,300,0` | Power state (1=Standby, 2=Transmit) |
+| Range | `$R62` | `$N62,{index},0,0` | Range index |
+| Gain | `$R63` | `$N63,{auto},{value},0,80,0` | Gain (auto=0/1, value=0-100) |
+| Sea | `$R64` | `$N64,{auto},{value},50,0,0,0` | Sea clutter |
+| Rain | `$R65` | `$N65,{auto},{value},0,0,0,0` | Rain clutter |
+| Noise Reduction | `$R67,0,3` | `$N67,0,3,{value},0` | NR (0=OFF, 1=ON) |
+| Int. Rejection | `$R67,0,0` | `$N67,0,0,{value},0` | IR (0=OFF, 2=ON) |
+| RezBoost | `$REE` | `$NEE,{level},0` | Beam sharpening (0-3) |
+| Bird Mode | `$RED` | `$NED,{level},0` | Bird mode (0-3) |
+| Target Analyzer | `$REF` | `$NEF,{enabled},{mode},0` | Doppler (enabled=0/1, mode=0/1) |
+| Scan Speed | `$R89` | `$N89,{mode},0` | Rotation (0=24RPM, 2=Auto) |
+| Main Bang | `$R83` | `$N83,{value},0` | MBS (0-255 → 0-100%) |
+| TX Channel | `$REC` | `$NEC,{channel}` | TX channel (0-3) |
+| Blind Sector | `$R77` | `$N77,{s2_en},{s1_st},{s1_w},{s2_st},{s2_w}` | No-transmit zones |
+| Modules | `$R96` | `$N96,{part-ver},...` | Firmware info |
+| Operating Hours | `$R8E,0,0` | `$N8E,{seconds}` | Total on-time |
+
+### Signal Processing Response Formats (0x67)
+
+The `$N67` response has **two different formats** depending on context:
+
+**Format 1 - SET command echo:**
+```
+$N67,0,{feature},{value},{screen}
+```
+Example: `$N67,0,3,1,0` → Noise Reduction ON
+
+**Format 2 - REQUEST response:**
+```
+$N67,{feature},{value},{screen}
+```
+Example: `$N67,3,1,0` → Noise Reduction ON
+
+**Parsing ambiguity**: When the first argument is `0`, it's ambiguous whether this is Format 1 (leading 0, then feature 0) or Format 2 (feature 0 directly). The implementation assumes Format 1 if `args[0] == 0` and there are at least 3 arguments.
+
+**Feature-specific queries**: To reliably query a specific feature, use:
+- Noise Reduction: `$R67,0,3` → Response: `$N67,0,3,{value},0`
+- Interference Rejection: `$R67,0,0` → Response: `$N67,0,0,{value},0`
+
+### Blind Sector Response Format (0x77)
 
 **Request:**
 ```
-$R8E,0,0\r\n
+$R77
 ```
 
 **Response:**
 ```
-$N8E,{seconds}\r\n
+$N77,{s2_enable},{sector1_start},{sector1_width},{sector2_start},{sector2_width}
 ```
 
-Example:
+Example: `$N77,0,200,100,0,0` → Sector 1 enabled from 200° to 300° (width=100°), Sector 2 disabled
+
+**Converting to start/end angles:**
 ```
-$N8E,105883920
+sector1_end = (sector1_start + sector1_width) % 360
+sector2_end = (sector2_start + sector2_width) % 360
+sector1_enabled = sector1_width > 0
+sector2_enabled = sector2_width > 0
 ```
 
-Convert to hours: `105883920 / 3600 = 29412.2 hours`
+## Recommended State Initialization Sequence
+
+After establishing a TCP connection, send these commands to query all current radar state:
+
+```
+$R69          # Status (power state)
+$R62          # Range
+$R63          # Gain
+$R64          # Sea clutter
+$R65          # Rain clutter
+$R67,0,3      # Noise Reduction
+$R67,0,0      # Interference Rejection
+$REE          # RezBoost
+$RED          # Bird Mode
+$REF          # Target Analyzer
+$R89          # Scan Speed
+$R83          # Main Bang Suppression
+$REC          # TX Channel
+$R77          # Blind Sector / No-Transmit Zones
+$R96          # Module/firmware info
+$R8E,0,0      # Operating hours
+```
+
+## Implementation Notes
+
+### Value Conversions
+
+**Main Bang Suppression (0-255 ↔ 0-100%):**
+```
+percentage = (raw_value * 100) / 255
+raw_value = (percentage * 255) / 100
+```
+
+**Heading Alignment (degrees ↔ protocol):**
+```
+protocol_value = degrees * 10   # 0.0° → 0, 359.9° → 3599
+degrees = protocol_value / 10.0
+# Negative: -1.0° → 3590 (wrap at 3600)
+```
+
+**Blind Sector (start/end ↔ start/width):**
+```
+# UI to protocol:
+width = (end - start + 360) % 360
+if (!enabled) width = 0
+
+# Protocol to UI:
+end = (start + width) % 360
+enabled = width > 0
+```
+
+### Connection Reliability
+
+1. **Try port 10010 first** for NXT models, fall back to 10000
+2. **Keep-alive every 5 seconds** or connection drops
+3. **Dynamic command port**: Parse login response for actual port (often 10100)
+4. **Reconnect on state change**: Query state after reconnection as radar may have changed
+
+### Error Handling
+
+- Radar may not respond to malformed commands (silent failure)
+- Unknown commands return no response
+- Invalid values may be silently clamped to valid range
+- Connection drops if keep-alive lapses for ~10 seconds
+
+### Debugging TCP Traffic
+
+**Important**: TCP control traffic is only visible when capturing on the actual client machine
+(or via port mirroring). Capturing from a third-party machine on the network shows only
+broadcast UDP traffic. This caused significant confusion during initial reverse engineering.
+
+To capture Furuno control traffic:
+1. Run Wireshark on the machine running the radar software (e.g., TimeZero PC)
+2. Or configure port mirroring on the network switch
+3. Filter: `ip.addr == 172.31.3.212 && tcp.payload contains 24:53` (for `$S` commands)
+
+## FAR Series Differences (Commercial Radars)
+
+The FAR series (FAR-2117, FAR-2127, FAR-3000, etc.) are commercial-grade magnetron radars with additional features. Based on FAR2127 captures:
+
+### Magnetron Warmup (0x76)
+
+FAR series radars report warmup progress during transmit startup:
+```
+$N76,3     # Starting warmup
+$N76,4
+$N76,5
+...
+$N76,48    # Approaching ready
+$N76,49
+$N76,50
+$N76,51
+$N76,52    # Ready to transmit
+```
+
+The value ramps from ~3 to ~52 over several seconds as the magnetron warms up. DRS-NXT consumer radars are solid-state and don't have magnetron warmup.
+
+### Extended Signal Processing (0x67)
+
+FAR series has 27 signal processing features (0-26) vs DRS-NXT's limited set:
+
+| Feature | FAR2127 Observed Value | Possible Function |
+|---------|------------------------|-------------------|
+| 0 | 0-2 | Interference Rejection |
+| 1 | 0-1 | Unknown |
+| 2 | 0 | Unknown |
+| 3 | 0-1 | Noise Reduction |
+| 4 | 0 | Unknown |
+| 5 | 0-1 | Unknown |
+| 6 | 2-13 | Unknown (wide range) |
+| 7-8 | 0 | Unknown |
+| 9 | 1-2 | Unknown |
+| 10-11 | 1-3 | Unknown |
+| 12 | 0 | Unknown |
+| 13 | 1-2 | Unknown |
+| 14 | 3 | Unknown |
+| 15-19 | 0 | Unknown |
+| 20 | 1 | Unknown |
+| 21 | 2-3 | Unknown |
+| 22 | 0-3 | Unknown |
+| 23 | 3 | Unknown |
+| 24 | 0 | Unknown |
+| 25 | 0-1 | Unknown |
+| 26 | 0 | Unknown |
+
+**Request format differs:**
+- FAR series: `$R67,5,{feature},,0` or `$R67,0,{feature},,1` (note double comma, trailing screen param)
+- DRS-NXT: `$R67,0,{feature}`
+
+### Shorter Response Formats
+
+FAR series uses more compact responses:
+
+| Command | DRS-NXT Response | FAR Response |
+|---------|------------------|--------------|
+| Status (0x69) | `$N69,{status},0,0,60,300,0` | `$N69,{status}` |
+| Range (0x62) | `$N62,{idx},0,0` | `$N62,{idx},0` |
+| Gain (0x63) | `$N63,{auto},{val},0,80,0` | `$N63,{auto},{val}` |
+
+### Additional FAR Commands
+
+| ID | Example | Description |
+|----|---------|-------------|
+| 0x68 | `$N68,0` | Unknown (FAR-specific) |
+| 0x76 | `$N76,{warmup}` | Magnetron warmup progress (3→52) |
+| 0x7E | `$N7E,1,65535` | Unknown counter/timer |
+| 0x99 | `$N99,60000,927,55000,2377` | Unknown calibration (4 values) |
+| 0xB4 | `$NB4,0` | Unknown |
+| 0xB6 | `$NB6,1` | Unknown |
+
+### CustomPictureAll (0x66) Extended
+
+FAR series returns 22+ parameters in a single response:
+```
+$N66,5,1,1,0,0,0,1,13,0,0,2,3,3,0,2,3,0,0,0,0,0,1
+```
+
+This encodes all picture settings for efficient state synchronization on commercial displays.
 
 ## References
 
 - mayara-lib source: `src/brand/furuno/`
 - mayara-core protocol: `src/protocol/furuno/`
 - Network captures:
-  - `research/furuno/furuno_commands` - Complete command session dump
+  - `research/furuno/furuno_commands` - Complete command session dump (DRS4D-NXT)
+  - `research/furuno/far2127-command-1.rtf` - FAR2127 commercial radar session
   - `/home/dirk/dev/furuno_pcap/furuno4.pcap` - TCP session with transmit/standby
 - TimeZero Professional: https://mytimezero.com/tz-professional
-- Protocol decoded via Wireshark analysis of TimeZero ↔ DRS4D-NXT communication
+- Protocol decoded via Wireshark analysis of TimeZero ↔ DRS4D-NXT/FAR2127 communication

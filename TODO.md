@@ -26,9 +26,6 @@ TODO:
 
 ### dirkwa
 
-Update this with your findings mayara/docs/furuno/protocol.md
-
-
 files the same? WASM/Standalone?
 - locator rs
 - Build rs
