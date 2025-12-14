@@ -1,4 +1,4 @@
-use anyhow::{Context, Error};
+use anyhow::Error;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
 
@@ -348,13 +348,8 @@ impl FurunoReportReceiver {
             }
 
             FurunoReport::Range(r) => {
-                let range = self.info.ranges.all.get(r.range_index).with_context(|| {
-                    format!(
-                        "Range index {} out of bounds for ranges {}",
-                        r.range_index, self.info.ranges,
-                    )
-                })?;
-                self.set_value("range", range.distance() as f32);
+                // range_meters is already converted from wire index by mayara-core
+                self.set_value("range", r.range_meters as f32);
             }
 
             FurunoReport::OnTime(o) => {
@@ -430,10 +425,9 @@ impl FurunoReportReceiver {
                 let value = if transmitting { Status::Transmit } else { Status::Standby };
                 self.set_value("power", value as i32 as f32);
             }
-            CoreControlUpdate::Range(range_index) => {
-                if let Some(range) = self.info.ranges.all.get(range_index as usize) {
-                    self.set_value("range", range.distance() as f32);
-                }
+            CoreControlUpdate::Range(range_meters) => {
+                // range_meters is already converted from wire index by mayara-core
+                self.set_value("range", range_meters as f32);
             }
             CoreControlUpdate::Gain { auto, value } => {
                 self.set_value_auto("gain", value as f32, if auto { 1 } else { 0 });

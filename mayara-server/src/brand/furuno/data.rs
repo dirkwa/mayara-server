@@ -551,8 +551,6 @@ impl FurunoDataReceiver {
     // [2, 250, 0, 1, 0, 0, 0, 0, 36, 49, 116, 59, 0, 0, 240, 9]
 
     fn parse_metadata_header(&self, data: &[u8]) -> FurunoSpokeMetadata {
-        let ranges = &self.info.ranges;
-
         // Extract all the fields from the header
         let v1 = (data[8] as u32 + (data[9] as u32 & 0x01) * 256) * 4 + 4;
         let sweep_count = (data[9] >> 1) as u32;
@@ -560,22 +558,26 @@ impl FurunoDataReceiver {
         let encoding = (data[11] & 0x18) >> 3;
         let v2 = (data[11] & 0x20) >> 5;
         let v3 = (data[11] & 0xc0) >> 6;
-        let range_index = data[12] as usize;
+        let wire_index = data[12];
         let have_heading = ((data[15] & 0x30) >> 3) as u8;
 
-        // Now do stuff with the data
-        let range = ranges
-            .all
-            .get(range_index)
-            .map(|r| r.distance())
-            .unwrap_or_else(|| {
-                log::warn!(
-                    "Unknown range index {} in header: {:?}",
-                    range_index,
-                    &data[0..20]
-                );
-                0
-            });
+        // Convert wire index to meters using mayara-core's range table
+        // Wire indices are non-sequential (21=1/16nm, 19=36nm out of order)
+        let range = mayara_core::protocol::furuno::get_range_meters(wire_index) as i32;
+        if range == 0 {
+            log::warn!(
+                "Unknown wire index {} -> 0m in header: {:02X?}",
+                wire_index,
+                &data[0..16]
+            );
+        } else if self.sweep_count == 0 {
+            // Log once per rotation for debugging
+            log::debug!(
+                "wire_index {} -> {} meters",
+                wire_index,
+                range
+            );
+        }
         let range = range as u32;
         let metadata = FurunoSpokeMetadata {
             sweep_count,

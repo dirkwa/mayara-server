@@ -15,7 +15,7 @@ use super::command::*;
 pub enum ControlUpdate {
     /// Power state: transmitting?
     Power(bool),
-    /// Range index (use range_index_to_meters to convert)
+    /// Range in meters (converted from wire index)
     Range(i32),
     /// Gain with auto mode
     Gain { auto: bool, value: i32 },
@@ -179,8 +179,10 @@ pub fn parse_control_response(line: &str) -> Option<ControlUpdate> {
         return Some(ControlUpdate::Power(transmitting));
     }
 
-    if let Some(range_index) = parse_range_response(line) {
-        return Some(ControlUpdate::Range(range_index));
+    if let Some(wire_index) = parse_range_response(line) {
+        // Convert wire index to meters
+        let range_meters = range_index_to_meters(wire_index).unwrap_or(0);
+        return Some(ControlUpdate::Range(range_meters));
     }
 
     if let Some(cv) = parse_gain_response(line) {

@@ -160,12 +160,14 @@ pub fn format_status_command(transmit: bool) -> String {
 /// Format range command
 ///
 /// # Arguments
-/// * `range_index` - Index into the radar's range table (0-23)
+/// * `range_meters` - Desired range in meters (e.g. 88896 for 48nm)
 ///
 /// # Returns
-/// Formatted command: `$S62,{index},0,0\r\n`
-pub fn format_range_command(range_index: i32) -> String {
-    format_command(CommandMode::Set, CommandId::Range, &[range_index, 0, 0])
+/// Formatted command: `$S62,{wire_index},0,0\r\n`
+/// The wire index is looked up from RANGE_TABLE based on the meters value.
+pub fn format_range_command(range_meters: i32) -> String {
+    let wire_index = meters_to_range_index(range_meters);
+    format_command(CommandMode::Set, CommandId::Range, &[wire_index, 0, 0])
 }
 
 /// Furuno range index table (wire_index -> meters)
@@ -192,19 +194,31 @@ pub const RANGE_TABLE: [(i32, i32); 18] = [
     (15, 88896), // 48 nm = 88896m (maximum range)
 ];
 
-/// Convert range index to meters
-pub fn range_index_to_meters(index: i32) -> Option<i32> {
+/// Convert wire index to meters
+pub fn range_index_to_meters(wire_index: i32) -> Option<i32> {
     RANGE_TABLE.iter()
-        .find(|(idx, _)| *idx == index)
+        .find(|(idx, _)| *idx == wire_index)
         .map(|(_, meters)| *meters)
 }
 
-/// Convert meters to closest range index
+/// Convert meters to wire index
+/// Uses exact match lookup in the ordered RANGE_TABLE array.
+/// The table is ordered by distance (index 0 = smallest, index 17 = largest).
 pub fn meters_to_range_index(meters: i32) -> i32 {
-    RANGE_TABLE.iter()
-        .min_by_key(|(_, m)| (m - meters).abs())
-        .map(|(idx, _)| *idx)
-        .unwrap_or(4) // Default to 1nm
+    // RANGE_TABLE is ordered by distance, so we can do direct lookup
+    for (wire_idx, m) in RANGE_TABLE.iter() {
+        if *m == meters {
+            return *wire_idx;
+        }
+    }
+    // If no exact match, find the closest one that's >= requested meters
+    for (wire_idx, m) in RANGE_TABLE.iter() {
+        if *m >= meters {
+            return *wire_idx;
+        }
+    }
+    // Fallback to max range (48nm = wire index 15)
+    15
 }
 
 /// Format gain command
@@ -988,8 +1002,17 @@ mod tests {
 
     #[test]
     fn test_format_range() {
-        let cmd = format_range_command(5);
+        // 2778m = 1.5nm -> wire index 5
+        let cmd = format_range_command(2778);
         assert_eq!(cmd, "$S62,5,0,0\r\n");
+
+        // 88896m = 48nm -> wire index 15
+        let cmd = format_range_command(88896);
+        assert_eq!(cmd, "$S62,15,0,0\r\n");
+
+        // 66672m = 36nm -> wire index 19
+        let cmd = format_range_command(66672);
+        assert_eq!(cmd, "$S62,19,0,0\r\n");
     }
 
     #[test]

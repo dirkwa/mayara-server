@@ -216,21 +216,11 @@ impl Command {
             .parse::<f32>()
             .map_err(|_| RadarError::MissingValue(cv.id.clone()))? as i32;
 
-        // Handle range specially - needs index conversion
+        // Handle range - client sends distance in meters
+        // format_range_command converts meters to wire index internally
         if cv.id == "range" {
-            let range_index = if value < self.ranges.len() as i32 {
-                value
-            } else {
-                let mut i = 0;
-                for r in self.ranges.all.iter() {
-                    if r.distance() >= value {
-                        break;
-                    }
-                    i += 1;
-                }
-                i
-            };
-            let cmd = format_range_command(range_index);
+            log::info!("{}: Range {} meters", self.key, value);
+            let cmd = format_range_command(value);
             log::info!("{}: Send command {}", self.key, cmd.trim());
             self.send_formatted(write, &cmd).await?;
             self.send_formatted(write, &format_request_picture_all())

@@ -220,6 +220,25 @@ impl Ranges {
         }
     }
 
+    /// Convert a distance in meters to the corresponding range index.
+    /// Returns the index of the range that exactly matches or is closest to the distance.
+    pub fn distance_to_index(&self, distance: i32) -> i32 {
+        // First try exact match
+        for (i, r) in self.all.iter().enumerate() {
+            if r.distance == distance {
+                return i as i32;
+            }
+        }
+        // No exact match - find the closest range that is >= distance
+        for (i, r) in self.all.iter().enumerate() {
+            if r.distance >= distance {
+                return i as i32;
+            }
+        }
+        // Distance is larger than all ranges - return the last index
+        (self.all.len().saturating_sub(1)) as i32
+    }
+
     pub fn len(&self) -> usize {
         self.all.len()
     }

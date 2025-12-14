@@ -11,7 +11,7 @@ use mayara_core::protocol::furuno::command::{
     format_noise_reduction_command, format_rain_command, format_range_command,
     format_request_modules, format_request_ontime, format_rezboost_command,
     format_scan_speed_command, format_sea_command, format_status_command,
-    format_target_analyzer_command, format_tx_channel_command, meters_to_range_index,
+    format_target_analyzer_command, format_tx_channel_command,
     parse_login_response, parse_signal_processing_response, LOGIN_MESSAGE,
     // State request functions
     format_request_bird_mode, format_request_blind_sector, format_request_gain,
@@ -178,13 +178,13 @@ impl FurunoController {
 
     /// Set radar range in meters
     pub fn set_range(&mut self, range_meters: u32) {
-        let range_index = meters_to_range_index(range_meters as i32);
-        let cmd = format_range_command(range_index);
+        // format_range_command accepts meters and converts to wire index internally
+        let cmd = format_range_command(range_meters as i32);
         // Remove trailing \r\n since send_line adds it
         let cmd = cmd.trim_end_matches('\n').trim_end_matches('\r');
         debug(&format!(
-            "[{}] Queueing range command: {} (index {} for {}m)",
-            self.radar_id, cmd, range_index, range_meters
+            "[{}] Queueing range command: {} ({}m)",
+            self.radar_id, cmd, range_meters
         ));
 
         if self.is_connected() {

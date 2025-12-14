@@ -9,6 +9,7 @@
 //! - Testing frameworks
 
 use super::Model;
+use super::command::range_index_to_meters;
 use crate::error::ParseError;
 
 // =============================================================================
@@ -107,7 +108,8 @@ pub struct RainReport {
 /// Range report ($N62)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RangeReport {
-    pub range_index: usize,
+    /// Range in meters (converted from wire index)
+    pub range_meters: i32,
 }
 
 /// Operating time report ($N8E)
@@ -429,8 +431,11 @@ pub fn parse_report(line: &str) -> Result<FurunoReport, ParseError> {
                     "Range command missing index".to_string(),
                 ));
             }
+            // Convert wire index to meters
+            let wire_index = numbers[0] as i32;
+            let range_meters = range_index_to_meters(wire_index).unwrap_or(0);
             Ok(FurunoReport::Range(RangeReport {
-                range_index: numbers[0] as usize,
+                range_meters,
             }))
         }
 
@@ -601,9 +606,10 @@ mod tests {
 
     #[test]
     fn test_parse_range() {
+        // Wire index 5 = 2778 meters (1.5nm)
         let report = parse_report("$N62,5,0,0").unwrap();
         match report {
-            FurunoReport::Range(r) => assert_eq!(r.range_index, 5),
+            FurunoReport::Range(r) => assert_eq!(r.range_meters, 2778),
             _ => panic!("Expected Range report"),
         }
     }
