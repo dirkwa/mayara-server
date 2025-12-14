@@ -84,7 +84,6 @@ impl FurunoReportReceiver {
                         Ok(update) => {
                             if let Err(e) = self.process_control_update(update).await {
                                 log::error!("{}: control update error: {:?}", self.key, e);
-                                // Don't return on control errors, keep running
                             }
                         },
                     }
@@ -116,6 +115,12 @@ impl FurunoReportReceiver {
         self.set_value_auto("gain", state.gain.value as f32, state.gain.mode == "auto");
         self.set_value_auto("sea", state.sea.value as f32, state.sea.mode == "auto");
         self.set_value_auto("rain", state.rain.value as f32, state.rain.mode == "auto");
+
+        // Model-specific controls are only available after model detection
+        // (update_when_model_known adds these controls)
+        if !self.model_known {
+            return;
+        }
 
         // Apply signal processing controls
         self.set_value("noiseReduction", if state.noise_reduction { 1.0 } else { 0.0 });
