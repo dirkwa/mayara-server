@@ -409,15 +409,8 @@ impl RadarLocator {
         // Model reports: (source_addr, model, serial)
         let mut model_reports: Vec<(String, Option<String>, Option<String>)> = Vec::new();
 
-        // Poll Furuno
+        // Poll Furuno (beacon responses and model reports)
         self.poll_furuno(io, &mut buf, &mut discoveries, &mut model_reports);
-
-        // Apply model reports to existing radars
-        for (addr, model, serial) in model_reports {
-            if let Some(updated) = self.update_radar_model_info(io, &addr, model.as_deref(), serial.as_deref()) {
-                events.push(LocatorEvent::RadarUpdated(updated));
-            }
-        }
 
         // Poll Navico BR24
         if let Some(socket) = self.navico_br24_socket {
@@ -492,6 +485,14 @@ impl RadarLocator {
         for discovery in discoveries {
             if self.add_radar(io, &discovery, current_time_ms) {
                 events.push(LocatorEvent::RadarDiscovered(discovery));
+            }
+        }
+
+        // Apply model reports to existing radars (after discoveries are added)
+        // This ensures the radar exists before we try to update its model info
+        for (addr, model, serial) in model_reports {
+            if let Some(updated) = self.update_radar_model_info(io, &addr, model.as_deref(), serial.as_deref()) {
+                events.push(LocatorEvent::RadarUpdated(updated));
             }
         }
 

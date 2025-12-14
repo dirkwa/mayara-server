@@ -367,12 +367,14 @@ pub fn process_discovery(
     let report_addr: SocketAddrV4 = SocketAddrV4::new(*radar_addr.ip(), 0); // Port is set in login_to_radar
     let send_command_addr: SocketAddrV4 = report_addr.clone();
 
+    // Use name (e.g., "RD003212") as serial identifier for unique key generation
+    // Use None for 'which' since Furuno doesn't have multi-unit setups like Navico A/B
     let info: RadarInfo = RadarInfo::new(
         session.clone(),
         LocatorId::Furuno,
         Brand::Furuno,
-        discovery.model.as_deref(),
-        Some(&discovery.name),
+        Some(&discovery.name), // serial_no: radar identifier from beacon
+        None,                  // which: not used for Furuno
         64,
         FURUNO_SPOKES,
         FURUNO_SPOKE_LEN,
