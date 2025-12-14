@@ -273,11 +273,11 @@ struct InterfaceId {
     name: String,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct InterfaceApi {
-    brands: HashSet<Brand>,
-    interfaces: HashMap<InterfaceId, RadarInterfaceApi>,
+    pub brands: HashSet<Brand>,
+    pub(crate) interfaces: HashMap<InterfaceId, RadarInterfaceApi>,
 }
 
 // deprecated_marked_for_delete: RadarInterfaceApi::new() and InterfaceId::new() are only used by legacy locator

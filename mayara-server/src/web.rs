@@ -21,7 +21,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 use thiserror::Error;
-use tokio::{net::TcpListener, sync::broadcast, sync::mpsc};
+use tokio::{net::TcpListener, sync::broadcast};
 use tokio_graceful_shutdown::SubsystemHandle;
 
 mod axum_fix;
@@ -31,7 +31,7 @@ use axum_fix::{Message, WebSocket, WebSocketUpgrade};
 use mayara_server::{
     radar::{Legend, RadarError, RadarInfo},
     storage::{AppDataKey, SharedStorage, create_shared_storage},
-    ProtoAssets, Session,
+    InterfaceApi, ProtoAssets, Session,
 };
 
 // ARPA types from mayara-core for v6 API
@@ -504,7 +504,7 @@ async fn get_radar_state(
 
 #[debug_handler]
 async fn get_interfaces(
-    State(state): State<Web>,
+    State(_state): State<Web>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: hyper::header::HeaderMap,
 ) -> Response {
@@ -515,18 +515,10 @@ async fn get_interfaces(
 
     debug!("Interface state request from {} for host '{}'", addr, host);
 
-    let (tx, mut rx) = mpsc::channel(1);
-    state
-        .session
-        .read()
-        .unwrap()
-        .tx_interface_request
-        .send(Some(tx))
-        .unwrap();
-    match rx.recv().await {
-        Some(api) => Json(api).into_response(),
-        _ => Json(Vec::<String>::new()).into_response(),
-    }
+    // deprecated_marked_for_delete: Legacy locator used to respond to interface requests.
+    // The new core locator doesn't track per-interface status yet.
+    // Return empty interface list for now.
+    Json(InterfaceApi::default()).into_response()
 }
 
 #[debug_handler]
