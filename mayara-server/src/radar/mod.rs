@@ -262,7 +262,7 @@ impl RadarInfo {
             rotation_timestamp: Instant::now() - Duration::from_secs(2),
         };
 
-        log::info!("Created RadarInfo {:?}", info);
+        log::debug!("Created RadarInfo {:?}", info);
         info
     }
 
@@ -951,7 +951,7 @@ fn default_legend(session: Session, doppler: bool, pixel_values: u8) -> Legend {
         }
     }
 
-    log::info!("Created legend {:?}", legend);
+    log::debug!("Created legend {:?}", legend);
     legend
 }
 
