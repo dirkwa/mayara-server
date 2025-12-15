@@ -7,6 +7,9 @@ import {
   registerRadarCallback,
   registerControlCallback,
   setCurrentRange,
+  getPowerState,
+  getOperatingHours,
+  hasHoursCapability,
 } from "./control.js";
 import { isStandaloneMode, detectMode } from "./api.js";
 import "./protobuf/protobuf.min.js";
@@ -579,6 +582,15 @@ function radarLoaded(r) {
   renderer.setLegend(buildMayaraLegend());
   renderer.setSpokes(spokesPerRevolution, maxSpokeLen);
 
+  // Check initial power state and set standby mode if needed
+  const initialPowerState = getPowerState();
+  const isStandby = initialPowerState === 'standby' || initialPowerState === 'off';
+  if (isStandby) {
+    const hours = getOperatingHours();
+    const hoursCap = hasHoursCapability();
+    renderer.setStandbyMode(true, hours.onTime, hours.txTime, hoursCap.hasOnTime, hoursCap.hasTxTime);
+  }
+
   // Use provided streamUrl or construct SignalK stream URL
   let streamUrl = r.streamUrl;
   if (!streamUrl || streamUrl === "undefined" || streamUrl === "null") {
@@ -692,13 +704,13 @@ function hexToRGBA(hex) {
 }
 
 function controlUpdate(control, controlValue) {
-  if (control.name == "Range") {
+  if (control && control.name == "Range") {
     let range = parseFloat(controlValue.value);
     if (renderer && renderer.setRange) {
       renderer.setRange(range);
     }
   }
-  if (control.name.startsWith("No Transmit")) {
+  if (control && control.name && control.name.startsWith("No Transmit")) {
     let value = parseFloat(controlValue.value);
     let idx = extractNoTxZone(control.name);
     let start_or_end = extractStartOrEnd(control.name);
@@ -706,6 +718,15 @@ function controlUpdate(control, controlValue) {
       noTransmitAngles[idx][start_or_end] = value;
     } else {
       noTransmitAngles[idx] = null;
+    }
+  }
+  // Handle power state changes
+  if (controlValue && controlValue.id === 'power') {
+    const isStandby = controlValue.value === 'standby' || controlValue.value === 'off';
+    if (renderer) {
+      const hours = getOperatingHours();
+      const hoursCap = hasHoursCapability();
+      renderer.setStandbyMode(isStandby, hours.onTime, hours.txTime, hoursCap.hasOnTime, hoursCap.hasTxTime);
     }
   }
 }

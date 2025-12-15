@@ -7,7 +7,7 @@
  * UI Design: Touch-friendly with sliders and buttons only (no dropdowns).
  */
 
-export { loadRadar, registerRadarCallback, registerControlCallback, setCurrentRange };
+export { loadRadar, registerRadarCallback, registerControlCallback, setCurrentRange, getPowerState, getOperatingHours, hasHoursCapability };
 
 import van from "./van-1.5.2.js";
 import { fetchRadarIds, fetchCapabilities, fetchState, setControl, detectMode, isStandaloneMode } from "./api.js";
@@ -1031,4 +1031,36 @@ function showError(message) {
       errorEl.style.visibility = "hidden";
     }, 5000);
   }
+}
+
+/**
+ * Get current power state
+ * @returns {string} 'standby' | 'transmit' | 'off' | 'warming'
+ */
+function getPowerState() {
+  return radarState?.controls?.power || 'standby';
+}
+
+/**
+ * Get operating hours from radar state
+ * @returns {{ onTime: number, txTime: number }} Operating hours
+ */
+function getOperatingHours() {
+  const controls = radarState?.controls || {};
+  return {
+    onTime: controls.operatingHours || 0,
+    txTime: controls.transmitHours || 0
+  };
+}
+
+/**
+ * Check if radar has hours capability (operatingHours or transmitHours)
+ * @returns {{ hasOnTime: boolean, hasTxTime: boolean }}
+ */
+function hasHoursCapability() {
+  const controls = capabilities?.controls || [];
+  return {
+    hasOnTime: controls.some(c => c.id === 'operatingHours'),
+    hasTxTime: controls.some(c => c.id === 'transmitHours')
+  };
 }

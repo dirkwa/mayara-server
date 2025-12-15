@@ -145,6 +145,9 @@ impl FurunoReportReceiver {
             ControllerEvent::OperatingHoursUpdated { hours } => {
                 self.set_value("operatingHours", hours as f32);
             }
+            ControllerEvent::TransmitHoursUpdated { hours } => {
+                self.set_value("transmitHours", hours as f32);
+            }
         }
     }
 

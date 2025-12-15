@@ -25,6 +25,13 @@ class render_webgpu {
     // Heading rotation for North Up mode (in radians)
     this.headingRotation = 0;
 
+    // Standby mode state
+    this.standbyMode = false;
+    this.onTimeHours = 0;
+    this.txTimeHours = 0;
+    this.hasOnTimeCapability = false;
+    this.hasTxTimeCapability = false;
+
     // Start async initialization
     this.initPromise = this.#initWebGPU();
   }
@@ -168,6 +175,32 @@ class render_webgpu {
     this.headingRotation = radians;
     if (this.ready) {
       this.#updateUniforms();
+    }
+  }
+
+  setStandbyMode(isStandby, onTimeHours, txTimeHours, hasOnTimeCap, hasTxTimeCap) {
+    const wasStandby = this.standbyMode;
+    this.standbyMode = isStandby;
+    this.onTimeHours = onTimeHours || 0;
+    this.txTimeHours = txTimeHours || 0;
+    this.hasOnTimeCapability = hasOnTimeCap || false;
+    this.hasTxTimeCapability = hasTxTimeCap || false;
+
+    if (isStandby && !wasStandby) {
+      // Entering standby - clear spoke data
+      if (this.data) {
+        this.data.fill(0);
+      }
+      // Reset rotation counter
+      this.rotationCount = 0;
+      this.lastSpokeAngle = -1;
+    }
+
+    // Redraw to show/hide standby overlay
+    this.redrawCanvas();
+    if (this.ready) {
+      // Render to upload cleared data to GPU (clears the display)
+      this.render();
     }
   }
 
@@ -462,6 +495,65 @@ class render_webgpu {
     }
   }
 
+  // Format hours as TimeZero-style DAYS.HH:MM:SS
+  #formatHoursAsTimeZero(totalHours) {
+    const totalSeconds = Math.floor(totalHours * 3600);
+    const days = Math.floor(totalSeconds / 86400);
+    const remainingAfterDays = totalSeconds % 86400;
+    const hours = Math.floor(remainingAfterDays / 3600);
+    const minutes = Math.floor((remainingAfterDays % 3600) / 60);
+    const seconds = remainingAfterDays % 60;
+
+    const hh = hours.toString().padStart(2, '0');
+    const mm = minutes.toString().padStart(2, '0');
+    const ss = seconds.toString().padStart(2, '0');
+
+    return `${days}.${hh}:${mm}:${ss}`;
+  }
+
+  #drawStandbyOverlay(ctx) {
+    // Draw STANDBY text with ON-TIME and TX-Time in center of PPI
+    ctx.save();
+
+    // Large STANDBY text
+    ctx.fillStyle = "white";
+    ctx.font = "bold 36px/1 Verdana, Geneva, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+
+    // Add shadow for better readability
+    ctx.shadowColor = "black";
+    ctx.shadowBlur = 4;
+    ctx.shadowOffsetX = 2;
+    ctx.shadowOffsetY = 2;
+
+    // Calculate vertical position based on what we're showing
+    const hasAnyHours = this.hasOnTimeCapability || this.hasTxTimeCapability;
+    const standbyY = hasAnyHours ? this.center_y - 40 : this.center_y;
+
+    ctx.fillText("STANDBY", this.center_x, standbyY);
+
+    // Only show hours if capability exists
+    if (hasAnyHours) {
+      ctx.font = "bold 20px/1 Verdana, Geneva, sans-serif";
+
+      let yOffset = this.center_y + 10;
+
+      if (this.hasOnTimeCapability) {
+        const onTimeStr = this.#formatHoursAsTimeZero(this.onTimeHours);
+        ctx.fillText("ON-TIME: " + onTimeStr, this.center_x, yOffset);
+        yOffset += 30;
+      }
+
+      if (this.hasTxTimeCapability) {
+        const txTimeStr = this.#formatHoursAsTimeZero(this.txTimeHours);
+        ctx.fillText("TX-TIME: " + txTimeStr, this.center_x, yOffset);
+      }
+    }
+
+    ctx.restore();
+  }
+
   #drawOverlay() {
     if (!this.overlay_ctx) return;
 
@@ -470,6 +562,11 @@ class render_webgpu {
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.width, this.height);
+
+    // Draw standby overlay if in standby mode
+    if (this.standbyMode) {
+      this.#drawStandbyOverlay(ctx);
+    }
 
     // Draw range rings in bright green on top of radar
     ctx.strokeStyle = "#00ff00";

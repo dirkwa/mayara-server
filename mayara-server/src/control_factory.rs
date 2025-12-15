@@ -309,6 +309,12 @@ pub fn operating_hours_control() -> Control {
     build_control(&core_def)
 }
 
+/// Build transmit hours control (read-only)
+pub fn transmit_hours_control() -> Control {
+    let core_def = controls::control_transmit_hours();
+    build_control(&core_def)
+}
+
 /// Build serial number control (read-only)
 pub fn serial_number_control() -> Control {
     let core_def = controls::control_serial_number();

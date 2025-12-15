@@ -53,6 +53,11 @@ pub fn new(session: Session) -> SharedControls {
     );
 
     controls.insert(
+        "transmitHours".to_string(),
+        control_factory::transmit_hours_control(),
+    );
+
+    controls.insert(
         "rotationSpeed".to_string(),
         control_factory::rotation_speed_control_for_brand(Brand::Furuno),
     );

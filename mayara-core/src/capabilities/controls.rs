@@ -325,12 +325,36 @@ pub fn control_firmware_version() -> ControlDefinition {
     }
 }
 
-/// Operating hours: total hours of radar operation (read-only)
+/// Operating hours: total hours of radar operation (power-on time, read-only)
 pub fn control_operating_hours() -> ControlDefinition {
     ControlDefinition {
         id: "operatingHours".into(),
         name: "Operating Hours".into(),
-        description: "Total hours of radar operation.".into(),
+        description: "Total hours of radar power-on operation.".into(),
+        category: ControlCategory::Base,
+        control_type: ControlType::Number,
+        range: Some(RangeSpec {
+            min: 0.0,
+            max: 999999.0,
+            step: Some(0.1),
+            unit: Some("hours".into()),
+        }),
+        values: None,
+        properties: None,
+        modes: None,
+        default_mode: None,
+        read_only: true,
+        default: None,
+        wire_hints: None,
+    }
+}
+
+/// Transmit hours: total hours the radar has been transmitting (read-only)
+pub fn control_transmit_hours() -> ControlDefinition {
+    ControlDefinition {
+        id: "transmitHours".into(),
+        name: "Transmit Hours".into(),
+        description: "Total hours the radar has been actively transmitting.".into(),
         category: ControlCategory::Base,
         control_type: ControlType::Number,
         range: Some(RangeSpec {
@@ -1785,6 +1809,7 @@ pub fn get_base_control_for_brand(id: &str, brand: Brand) -> Option<ControlDefin
         "serialNumber" => Some(control_serial_number()),
         "firmwareVersion" => Some(control_firmware_version()),
         "operatingHours" => Some(control_operating_hours()),
+        "transmitHours" => Some(control_transmit_hours()),
         "rotationSpeed" => Some(control_rotation_speed_for_brand(brand)),
         _ => None,
     }

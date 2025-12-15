@@ -119,7 +119,14 @@ pub enum ControllerEvent {
     /// Operating hours retrieved from radar.
     /// Shell may want to display this or store for diagnostics.
     OperatingHoursUpdated {
-        /// Total operating hours
+        /// Total operating hours (power-on time)
+        hours: f64,
+    },
+
+    /// Transmit hours retrieved from radar.
+    /// Shell may want to display this or store for diagnostics.
+    TransmitHoursUpdated {
+        /// Total transmit hours
         hours: f64,
     },
 }

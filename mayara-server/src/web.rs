@@ -11,8 +11,11 @@ use axum_embed::ServeEmbed;
 use hyper;
 use log::{debug, trace};
 use miette::Result;
+#[cfg(not(feature = "dev"))]
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "dev")]
+use tower_http::services::ServeDir;
 use std::{
     collections::HashMap,
     io,
@@ -77,10 +80,12 @@ const INTERFACES_URI: &str = "/v1/api/interfaces";
 // SignalK applicationData API (for settings persistence)
 const APP_DATA_URI: &str = "/signalk/v1/applicationData/global/{appid}/{version}/{*key}";
 
+#[cfg(not(feature = "dev"))]
 #[derive(RustEmbed, Clone)]
 #[folder = "../mayara-gui/"]
 struct Assets;
 
+#[cfg(not(feature = "dev"))]
 #[derive(RustEmbed, Clone)]
 #[folder = "$OUT_DIR/web/"]
 struct ProtoWebAssets;
@@ -149,8 +154,19 @@ impl Web {
                 .await
                 .map_err(|e| WebError::Io(e))?;
 
+        // In dev mode, serve files from filesystem for live reload
+        // In production, use embedded files
+        // Note: CARGO_MANIFEST_DIR is the directory containing mayara-server/Cargo.toml
+        #[cfg(feature = "dev")]
+        let serve_assets = ServeDir::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../mayara-gui"));
+        #[cfg(not(feature = "dev"))]
         let serve_assets = ServeEmbed::<Assets>::new();
+
+        #[cfg(feature = "dev")]
+        let proto_web_assets = ServeDir::new(concat!(env!("OUT_DIR"), "/web"));
+        #[cfg(not(feature = "dev"))]
         let proto_web_assets = ServeEmbed::<ProtoWebAssets>::new();
+
         let proto_assets = ServeEmbed::<ProtoAssets>::new();
         #[cfg(feature = "rustdoc")]
         let rustdoc_assets = ServeEmbed::<RustdocAssets>::new();
@@ -196,6 +212,9 @@ impl Web {
             .with_state(self)
             .into_make_service_with_connect_info::<SocketAddr>();
 
+        #[cfg(feature = "dev")]
+        log::info!("Starting HTTP web server on port {} (DEV MODE - serving from filesystem)", port);
+        #[cfg(not(feature = "dev"))]
         log::info!("Starting HTTP web server on port {}", port);
 
         tokio::select! { biased;

@@ -152,6 +152,7 @@ fn build_controls(model: &ModelInfo, has_serial_number: bool) -> Vec<ControlDefi
     // Info controls (read-only)
     controls.push(control_firmware_version());
     controls.push(control_operating_hours());
+    controls.push(control_transmit_hours());
 
     // Only include serial number control if we have the data
     if has_serial_number {

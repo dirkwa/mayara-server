@@ -37,7 +37,7 @@ use crate::protocol::furuno::command::{
     format_blind_sector_command, format_gain_command, format_heading_align_command,
     format_interference_rejection_command, format_keepalive, format_main_bang_command,
     format_noise_reduction_command, format_rain_command, format_range_command,
-    format_request_modules, format_request_ontime, format_rezboost_command,
+    format_request_modules, format_request_ontime, format_request_txtime, format_rezboost_command,
     format_scan_speed_command, format_sea_command, format_status_command,
     format_target_analyzer_command, format_tx_channel_command, parse_login_response,
     LOGIN_MESSAGE,
@@ -99,8 +99,10 @@ pub struct FurunoController {
     /// Radar model from UDP model report (e.g., "DRS4D-NXT")
     /// Note: $N96 contains part numbers, not model names
     model: Option<String>,
-    /// Operating hours from $N8E response
+    /// Operating hours from $N8E response (total power-on time)
     operating_hours: Option<f64>,
+    /// Transmit hours from $N8F response (total transmit time)
+    transmit_hours: Option<f64>,
     /// Whether info requests have been sent after connection
     info_requested: bool,
     /// Whether state requests have been sent after connection
@@ -115,6 +117,8 @@ pub struct FurunoController {
     model_event_emitted: bool,
     /// Last emitted operating hours (to detect changes)
     last_emitted_hours: Option<f64>,
+    /// Last emitted transmit hours (to detect changes)
+    last_emitted_tx_hours: Option<f64>,
 }
 
 impl FurunoController {
@@ -150,6 +154,7 @@ impl FurunoController {
             firmware_version: None,
             model: None,
             operating_hours: None,
+            transmit_hours: None,
             info_requested: false,
             state_requested: false,
             login_sent: false,
@@ -157,6 +162,7 @@ impl FurunoController {
             connected_event_emitted: false,
             model_event_emitted: false,
             last_emitted_hours: None,
+            last_emitted_tx_hours: None,
         };
         // Queue keepalive to trigger connection
         controller.request_info();
@@ -202,9 +208,14 @@ impl FurunoController {
         self.firmware_version.as_deref()
     }
 
-    /// Get operating hours if known
+    /// Get operating hours if known (total power-on time)
     pub fn operating_hours(&self) -> Option<f64> {
         self.operating_hours
+    }
+
+    /// Get transmit hours if known (total transmit time)
+    pub fn transmit_hours(&self) -> Option<f64> {
+        self.transmit_hours
     }
 
     /// Set radar to transmit
@@ -423,6 +434,14 @@ impl FurunoController {
             if self.last_emitted_hours != Some(hours) {
                 self.last_emitted_hours = Some(hours);
                 events.push(ControllerEvent::OperatingHoursUpdated { hours });
+            }
+        }
+
+        // Emit TransmitHoursUpdated when hours change
+        if let Some(hours) = self.transmit_hours {
+            if self.last_emitted_tx_hours != Some(hours) {
+                self.last_emitted_tx_hours = Some(hours);
+                events.push(ControllerEvent::TransmitHoursUpdated { hours });
             }
         }
 
@@ -746,12 +765,15 @@ impl FurunoController {
         self.send_command(io, cmd.trim());
     }
 
-    /// Send info requests (firmware version, operating hours)
+    /// Send info requests (firmware version, operating hours, transmit hours)
     fn send_info_requests<I: IoProvider>(&self, io: &mut I) {
         let cmd = format_request_modules();
         self.send_command(io, cmd.trim());
 
         let cmd = format_request_ontime();
+        self.send_command(io, cmd.trim());
+
+        let cmd = format_request_txtime();
         self.send_command(io, cmd.trim());
 
         io.debug(&format!("[{}] Sent info requests", self.radar_id));
@@ -815,13 +837,27 @@ impl FurunoController {
         }
 
         // Parse operating hours response
+        // Protocol: $N8E,{seconds} where seconds is total power-on time
         if line.starts_with("$N8E") {
-            // Format: $N8E,0,hours,...
             let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() >= 3 {
-                if let Ok(hours) = parts[2].parse::<f64>() {
+            if parts.len() >= 2 {
+                if let Ok(seconds) = parts[1].parse::<f64>() {
+                    let hours = seconds / 3600.0;
                     self.operating_hours = Some(hours);
-                    io.debug(&format!("[{}] Operating hours: {}", self.radar_id, hours));
+                    io.debug(&format!("[{}] Operating hours: {:.1} ({} seconds)", self.radar_id, hours, seconds as i64));
+                }
+            }
+        }
+
+        // Parse transmit hours response
+        // Protocol: $N8F,{seconds} where seconds is total transmit time
+        if line.starts_with("$N8F") {
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() >= 2 {
+                if let Ok(seconds) = parts[1].parse::<f64>() {
+                    let hours = seconds / 3600.0;
+                    self.transmit_hours = Some(hours);
+                    io.debug(&format!("[{}] Transmit hours: {:.1} ({} seconds)", self.radar_id, hours, seconds as i64));
                 }
             }
         }

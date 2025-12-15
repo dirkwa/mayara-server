@@ -54,8 +54,10 @@ pub enum CommandId {
     MainBangSize = 0x83,
     AntennaHeight = 0x84,
     ScanSpeed = 0x89,
-    /// Operating time in seconds
+    /// Operating time in seconds (total power-on time)
     OnTime = 0x8E,
+    /// Transmit time in seconds (total time radar has been transmitting)
+    TxTime = 0x8F,
     /// Module/firmware information
     Modules = 0x96,
     AliveCheck = 0xE3,
@@ -293,14 +295,24 @@ pub fn format_request_modules() -> String {
     format_command(CommandMode::Request, CommandId::Modules, &[])
 }
 
-/// Format request for operating time (hours of operation)
+/// Format request for operating time (total power-on hours)
 ///
 /// # Returns
-/// Formatted command: `$R8E,0,0\r\n`
+/// Formatted command: `$R8E,0\r\n`
 ///
-/// Response format: `$N8E,{seconds}` where seconds is total operating time
+/// Response format: `$N8E,{seconds}` where seconds is total power-on time
 pub fn format_request_ontime() -> String {
-    format_command(CommandMode::Request, CommandId::OnTime, &[0, 0])
+    format_command(CommandMode::Request, CommandId::OnTime, &[0])
+}
+
+/// Format request for transmit time (total transmit hours)
+///
+/// # Returns
+/// Formatted command: `$R8F,0\r\n`
+///
+/// Response format: `$N8F,{seconds}` where seconds is total transmit time
+pub fn format_request_txtime() -> String {
+    format_command(CommandMode::Request, CommandId::TxTime, &[0])
 }
 
 /// Format blind sector (no-transmit zone) command
