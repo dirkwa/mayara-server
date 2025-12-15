@@ -119,6 +119,7 @@ const SUBSCRIBE: &'static str = "{\"context\": \"vessels.self\",
                          {\"path\": \"navigation.courseOverGroundTrue\"}]}\r\n";
 
 enum ConnectionType {
+    Disabled,
     Mdns,
     Udp(SocketAddr),
     Tcp(SocketAddr),
@@ -128,7 +129,9 @@ impl ConnectionType {
     fn parse(interface: &Option<String>) -> ConnectionType {
         match interface {
             None => {
-                return ConnectionType::Mdns;
+                // No navigation address specified - don't start mDNS discovery
+                // to avoid flooding the network with queries
+                return ConnectionType::Disabled;
             }
             Some(interface) => {
                 let parts: Vec<&str> = interface.splitn(2, ':').collect();
@@ -248,6 +251,12 @@ impl NavigationData {
     ) -> Result<Stream, RadarError> {
         let connection_type = ConnectionType::parse(interface);
         match connection_type {
+            ConnectionType::Disabled => {
+                // No navigation address configured - wait for shutdown
+                log::info!("Navigation data disabled (no --navigation-address specified)");
+                subsys.on_shutdown_requested().await;
+                Err(RadarError::Shutdown)
+            }
             ConnectionType::Mdns => {
                 self.find_mdns_service(subsys, rx_ip_change, interface)
                     .await
@@ -289,6 +298,9 @@ impl NavigationData {
         log::debug!("SignalK find_service (re)start");
 
         let r: Result<Stream, RadarError>;
+        let mut retry_interval = tokio::time::interval(Duration::from_secs(2));
+        retry_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
             let s = &subsys;
             tokio::select! { biased;
@@ -313,6 +325,9 @@ impl NavigationData {
                             }
                         },
                         _ => {
+                            // Non-resolved events (SearchStarted, etc) - wait before looping
+                            // to prevent tight loop flooding the network with mDNS queries
+                            retry_interval.tick().await;
                             continue;
                         }
                     }
@@ -332,7 +347,10 @@ impl NavigationData {
                     r = Ok(Stream::Tcp(stream));
                     break;
                 }
-                Err(_e) => {} // Just loop
+                Err(_e) => {
+                    // Connection failed - wait before retrying to prevent flood
+                    retry_interval.tick().await;
+                }
             }
         }
 
