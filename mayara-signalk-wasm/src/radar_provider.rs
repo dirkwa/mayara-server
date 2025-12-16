@@ -1483,6 +1483,7 @@ impl RadarProvider {
     }
 
     /// Get available secondary ranges for dual-range mode
+    #[allow(dead_code)]
     pub fn get_dual_range_available_ranges(&self, radar_id: &str) -> Vec<u32> {
         self.dual_range_controllers
             .get(radar_id)
@@ -1491,6 +1492,7 @@ impl RadarProvider {
     }
 
     /// Set dual-range configuration
+    #[allow(dead_code)]
     pub fn set_dual_range_config(&mut self, radar_id: &str, config: DualRangeConfig) -> Result<(), String> {
         // First check if radar supports dual-range
         if !self.supports_dual_range(radar_id) {
@@ -1513,6 +1515,7 @@ impl RadarProvider {
     }
 
     /// Enable or disable dual-range mode
+    #[allow(dead_code)]
     pub fn set_dual_range_enabled(&mut self, radar_id: &str, enabled: bool) -> Result<(), String> {
         if !self.supports_dual_range(radar_id) {
             return Err("Radar does not support dual-range".to_string());
@@ -1528,6 +1531,7 @@ impl RadarProvider {
     }
 
     /// Set secondary range in meters
+    #[allow(dead_code)]
     pub fn set_secondary_range(&mut self, radar_id: &str, range: u32) -> Result<(), String> {
         if !self.supports_dual_range(radar_id) {
             return Err("Radar does not support dual-range".to_string());

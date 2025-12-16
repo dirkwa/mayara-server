@@ -27,4 +27,10 @@ TODO:
 
 ### dirkwa
 
-- FULL REFACTOR IN PROGRESS
+- Find a github org home for the project and rename vereything
+- Refactor WASM to new infrastructure
+- Update documentation to WASM
+
+#### diwa done
+
+- Full refactor
