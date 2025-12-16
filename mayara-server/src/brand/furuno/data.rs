@@ -166,6 +166,8 @@ impl FurunoDataReceiver {
 
         log::debug!("Starting Furuno socket loop");
         loop {
+            log::trace!("Socket loop iteration, multicast={}, broadcast={}",
+                multicast_socket.is_some(), broadcast_socket.is_some());
             tokio::select! {
                 _ = subsys.on_shutdown_requested() => {
                     return Err(RadarError::Shutdown);
@@ -204,7 +206,11 @@ impl FurunoDataReceiver {
                             if self.verify_source_address(&addr) {
                                 self.process_frame(&buf2[..len]);
                                 self.receive_type = ReceiveAddressType::Broadcast;
-                                multicast_socket = None;
+                                // Note: DON'T disable multicast here! Multicast is preferred
+                                // because it's more reliable. Broadcast is a fallback for setups
+                                // where multicast doesn't work. If we receive broadcast first,
+                                // keep listening for multicast - once multicast starts working,
+                                // we'll switch to it and disable broadcast.
                             }
                         },
                         Err(e) => {

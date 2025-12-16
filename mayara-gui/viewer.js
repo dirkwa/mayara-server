@@ -119,6 +119,9 @@ window.onload = async function () {
   await Promise.all([renderer.initPromise, protobufPromise]);
   console.log("Both WebGPU and protobuf ready");
 
+  // Debug: expose renderer globally for console debugging
+  window.renderer = renderer;
+
   // Process any pending radar data that arrived before renderer was ready
   // (the callback might have been triggered by control.js before window.onload)
   if (pendingRadarData) {
@@ -622,11 +625,20 @@ function radarLoaded(r) {
     console.log("websocket error:", e);
   };
   webSocket.onmessage = (e) => {
-    if (RadarMessage) {
+    try {
+      const dataSize = e.data?.byteLength || e.data?.length || 0;
+      if (dataSize === 0) {
+        console.warn("WS message received with 0 bytes");
+        return;
+      }
+      if (!RadarMessage) {
+        console.warn("RadarMessage not loaded yet, dropping message");
+        return;
+      }
       let buf = e.data;
       let bytes = new Uint8Array(buf);
       var message = RadarMessage.decode(bytes);
-      if (message.spokes) {
+      if (message.spokes && message.spokes.length > 0) {
         for (let i = 0; i < message.spokes.length; i++) {
           let spoke = message.spokes[i];
 
@@ -647,6 +659,8 @@ function radarLoaded(r) {
         }
         renderer.render();
       }
+    } catch (err) {
+      console.error("Error processing WebSocket message:", err);
     }
   };
 }

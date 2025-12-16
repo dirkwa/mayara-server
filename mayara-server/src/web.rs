@@ -558,7 +558,8 @@ async fn spokes_handler(
 ) -> Response {
     debug!("spokes request from {} for {}", addr, params.radar_id);
 
-    let ws = ws.accept_compression(true);
+    // Disable compression temporarily to debug browser WebSocket issues
+    let ws = ws.accept_compression(false);
 
     match state
         .session
