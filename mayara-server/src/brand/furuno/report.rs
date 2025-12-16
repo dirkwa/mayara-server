@@ -71,7 +71,8 @@ impl FurunoReportReceiver {
         log::info!("{}: report receiver starting (unified controller)", self.key);
 
         let mut command_rx = self.info.control_update_subscribe();
-        let mut model_known = false;
+        // Check if model was already known from persistence (loaded before we start)
+        let mut model_known = self.info.controls.model_name().is_some();
 
         // Use interval instead of sleep - sleep() in select! doesn't work correctly
         let mut poll_interval = interval(self.poll_interval);

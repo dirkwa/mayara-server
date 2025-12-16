@@ -119,6 +119,8 @@ pub struct FurunoController {
     last_emitted_hours: Option<f64>,
     /// Last emitted transmit hours (to detect changes)
     last_emitted_tx_hours: Option<f64>,
+    /// Previous power state (to detect transitions)
+    prev_power_state: crate::state::PowerState,
 }
 
 impl FurunoController {
@@ -163,6 +165,7 @@ impl FurunoController {
             model_event_emitted: false,
             last_emitted_hours: None,
             last_emitted_tx_hours: None,
+            prev_power_state: crate::state::PowerState::Off,
         };
         // Queue keepalive to trigger connection
         controller.request_info();
@@ -708,6 +711,20 @@ impl FurunoController {
             self.parse_response(io, line);
         }
 
+        // Re-request state when radar transitions to transmit mode
+        // Some controls (like mainBangSuppression) may only be available when transmitting
+        use crate::state::PowerState;
+        if self.radar_state.power == PowerState::Transmit
+            && self.prev_power_state != PowerState::Transmit
+        {
+            io.debug(&format!(
+                "[{}] Radar started transmitting, re-requesting state",
+                self.radar_id
+            ));
+            self.send_state_requests(io);
+        }
+        self.prev_power_state = self.radar_state.power;
+
         // Send keep-alive
         if self.poll_count - self.last_keepalive > Self::KEEPALIVE_INTERVAL {
             self.send_keepalive(io);
@@ -818,7 +835,7 @@ impl FurunoController {
         let cmd = format_request_txtime();
         self.send_command(io, cmd.trim());
 
-        io.debug(&format!("[{}] Sent info requests", self.radar_id));
+        io.info(&format!("[{}] Sent info requests (including $R96 for firmware)", self.radar_id));
     }
 
     /// Send state requests
@@ -826,16 +843,25 @@ impl FurunoController {
         for cmd in generate_state_requests() {
             self.send_command(io, cmd.trim());
         }
-        io.debug(&format!("[{}] Sent state requests", self.radar_id));
+        io.info(&format!("[{}] Sent state requests (including $R83 for mainBangSuppression)", self.radar_id));
     }
 
     /// Parse a response line from the radar
     fn parse_response<I: IoProvider>(&mut self, io: &I, line: &str) {
+        // Debug: Log main bang responses specifically (using INFO to ensure visibility)
+        if line.starts_with("$N83") {
+            io.info(&format!(
+                "[{}] Main Bang response received: {} (before update: mbs={})",
+                self.radar_id, line, self.radar_state.main_bang_suppression
+            ));
+        }
+
         // Update state from control responses
         if self.radar_state.update_from_response(line) {
             io.debug(&format!(
-                "[{}] State updated: power={:?}, range={}",
-                self.radar_id, self.radar_state.power, self.radar_state.range
+                "[{}] State updated: power={:?}, range={}, mbs={}",
+                self.radar_id, self.radar_state.power, self.radar_state.range,
+                self.radar_state.main_bang_suppression
             ));
         }
 
@@ -870,7 +896,7 @@ impl FurunoController {
                     }
 
                     self.firmware_version = Some(firmware_version.to_string());
-                    io.debug(&format!(
+                    io.info(&format!(
                         "[{}] Firmware version from $N96: {}",
                         self.radar_id, firmware_version
                     ));

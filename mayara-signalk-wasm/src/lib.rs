@@ -197,7 +197,7 @@ pub extern "C" fn radar_get_radars(out_ptr: *mut u8, out_max_len: usize) -> i32 
 /// Return RadarInfo JSON for a specific radar
 #[no_mangle]
 #[allow(static_mut_refs)]
-pub extern "C" fn radar_get_info(
+pub extern "C" fn radar_get_radar_info(
     request_ptr: *const u8,
     request_len: usize,
     out_ptr: *mut u8,

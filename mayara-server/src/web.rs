@@ -38,16 +38,19 @@ use mayara_server::{
 };
 
 // ARPA types from mayara-core for v6 API
-use mayara_core::arpa::{ArpaProcessor, ArpaSettings, ArpaTarget};
+use mayara_core::arpa::{ArpaSettings, ArpaTarget};
 
 // Guard zone types from mayara-core
-use mayara_core::guard_zones::{GuardZone, GuardZoneProcessor, GuardZoneStatus};
+use mayara_core::guard_zones::{GuardZone, GuardZoneStatus};
 
 // Trail types from mayara-core
-use mayara_core::trails::{TrailData, TrailSettings, TrailStore};
+use mayara_core::trails::{TrailData, TrailSettings};
 
 // Dual-range types from mayara-core
-use mayara_core::dual_range::{DualRangeConfig, DualRangeController, DualRangeState as CoreDualRangeState};
+use mayara_core::dual_range::{DualRangeConfig, DualRangeState as CoreDualRangeState};
+
+// RadarEngine from mayara-core - unified feature processor management
+use mayara_core::engine::RadarEngine;
 
 // Capability types from mayara-core for v5 API
 use mayara_core::capabilities::{builder::build_capabilities_from_model_with_key, RadarStateV5, SupportedFeature};
@@ -104,30 +107,15 @@ pub enum WebError {
     Io(#[from] io::Error),
 }
 
-/// ARPA state shared across handlers
-type ArpaState = Arc<RwLock<HashMap<String, ArpaProcessor>>>;
-
-/// Guard zone state shared across handlers
-type GuardZoneState = Arc<RwLock<HashMap<String, GuardZoneProcessor>>>;
-
-/// Trail state shared across handlers
-type TrailState = Arc<RwLock<HashMap<String, TrailStore>>>;
-
-/// Dual-range state shared across handlers
-type DualRangeState = Arc<RwLock<HashMap<String, DualRangeController>>>;
+/// Shared RadarEngine for all feature processors (ARPA, GuardZones, Trails, DualRange)
+type SharedEngine = Arc<RwLock<RadarEngine>>;
 
 #[derive(Clone)]
 pub struct Web {
     session: Session,
     shutdown_tx: broadcast::Sender<()>,
-    /// ARPA processors keyed by radar ID
-    arpa_processors: ArpaState,
-    /// Guard zone processors keyed by radar ID
-    guard_zone_processors: GuardZoneState,
-    /// Trail stores keyed by radar ID
-    trail_stores: TrailState,
-    /// Dual-range controllers keyed by radar ID
-    dual_range_controllers: DualRangeState,
+    /// Unified engine for all radar feature processors
+    engine: SharedEngine,
     /// Local storage for applicationData API
     storage: SharedStorage,
 }
@@ -139,12 +127,32 @@ impl Web {
         Web {
             session,
             shutdown_tx,
-            arpa_processors: Arc::new(RwLock::new(HashMap::new())),
-            guard_zone_processors: Arc::new(RwLock::new(HashMap::new())),
-            trail_stores: Arc::new(RwLock::new(HashMap::new())),
-            dual_range_controllers: Arc::new(RwLock::new(HashMap::new())),
+            engine: Arc::new(RwLock::new(RadarEngine::new())),
             storage: create_shared_storage(),
         }
+    }
+
+    /// Ensure a radar exists in the engine (lazy initialization)
+    /// The engine uses "virtual" radars since actual controller management
+    /// is done by the Session. We just need the feature processors.
+    fn ensure_radar_in_engine(&self, radar_id: &str) {
+        let mut engine = self.engine.write().unwrap();
+        if !engine.contains(radar_id) {
+            // Add a Furuno radar as placeholder - the brand doesn't matter
+            // since we're only using the feature processors (ARPA, GuardZones, etc.)
+            // not the controller functionality
+            engine.add_furuno(radar_id, "0.0.0.0");
+        }
+    }
+
+    /// Ensure radar exists in engine with model info (needed for dual-range)
+    fn ensure_radar_in_engine_with_model(&self, radar_id: &str, model_name: &str) {
+        let mut engine = self.engine.write().unwrap();
+        if !engine.contains(radar_id) {
+            engine.add_furuno(radar_id, "0.0.0.0");
+        }
+        // Set model info (creates dual_range controller if model supports it)
+        engine.set_model_info(radar_id, model_name);
     }
 
     pub async fn run(self, subsys: SubsystemHandle) -> Result<(), WebError> {
@@ -943,11 +951,8 @@ async fn get_targets(
 ) -> Response {
     debug!("GET targets for radar {}", params.radar_id);
 
-    let processors = state.arpa_processors.read().unwrap();
-    let targets = processors
-        .get(&params.radar_id)
-        .map(|p| p.get_targets())
-        .unwrap_or_default();
+    let engine = state.engine.read().unwrap();
+    let targets = engine.get_targets(&params.radar_id);
 
     let response = TargetListResponse {
         radar_id: params.radar_id,
@@ -996,10 +1001,8 @@ async fn acquire_target(
             .into_response();
     }
 
-    let mut processors = state.arpa_processors.write().unwrap();
-    let processor = processors
-        .entry(params.radar_id.clone())
-        .or_insert_with(|| ArpaProcessor::new(ArpaSettings::default()));
+    // Ensure radar exists in engine
+    state.ensure_radar_in_engine(&params.radar_id);
 
     // Current timestamp in milliseconds
     let timestamp = std::time::SystemTime::now()
@@ -1007,7 +1010,8 @@ async fn acquire_target(
         .unwrap()
         .as_millis() as u64;
 
-    match processor.acquire_target(request.bearing, request.distance, timestamp) {
+    let mut engine = state.engine.write().unwrap();
+    match engine.acquire_target(&params.radar_id, request.bearing, request.distance, timestamp) {
         Some(target_id) => {
             debug!("Acquired target {} on radar {}", target_id, params.radar_id);
             Json(AcquireTargetResponse {
@@ -1040,16 +1044,12 @@ async fn cancel_target(
         params.target_id, params.radar_id
     );
 
-    let mut processors = state.arpa_processors.write().unwrap();
-    if let Some(processor) = processors.get_mut(&params.radar_id) {
-        if processor.cancel_target(params.target_id) {
-            debug!("Cancelled target {} on radar {}", params.target_id, params.radar_id);
-            StatusCode::NO_CONTENT.into_response()
-        } else {
-            (StatusCode::NOT_FOUND, "Target not found").into_response()
-        }
+    let mut engine = state.engine.write().unwrap();
+    if engine.cancel_target(&params.radar_id, params.target_id) {
+        debug!("Cancelled target {} on radar {}", params.target_id, params.radar_id);
+        StatusCode::NO_CONTENT.into_response()
     } else {
-        (StatusCode::NOT_FOUND, "Radar not found").into_response()
+        (StatusCode::NOT_FOUND, "Target not found").into_response()
     }
 }
 
@@ -1061,10 +1061,9 @@ async fn get_arpa_settings(
 ) -> Response {
     debug!("GET ARPA settings for radar {}", params.radar_id);
 
-    let processors = state.arpa_processors.read().unwrap();
-    let settings = processors
-        .get(&params.radar_id)
-        .map(|p| p.settings().clone())
+    let engine = state.engine.read().unwrap();
+    let settings = engine
+        .get_arpa_settings(&params.radar_id)
         .unwrap_or_default();
 
     Json(settings).into_response()
@@ -1079,12 +1078,11 @@ async fn set_arpa_settings(
 ) -> Response {
     debug!("PUT ARPA settings for radar {}", params.radar_id);
 
-    let mut processors = state.arpa_processors.write().unwrap();
-    let processor = processors
-        .entry(params.radar_id.clone())
-        .or_insert_with(|| ArpaProcessor::new(ArpaSettings::default()));
+    // Ensure radar exists in engine
+    state.ensure_radar_in_engine(&params.radar_id);
 
-    processor.update_settings(settings);
+    let mut engine = state.engine.write().unwrap();
+    engine.set_arpa_settings(&params.radar_id, settings);
     debug!("Updated ARPA settings for radar {}", params.radar_id);
 
     StatusCode::OK.into_response()
@@ -1190,11 +1188,8 @@ async fn get_guard_zones(
 ) -> Response {
     debug!("GET guard zones for radar {}", params.radar_id);
 
-    let processors = state.guard_zone_processors.read().unwrap();
-    let zones = processors
-        .get(&params.radar_id)
-        .map(|p| p.get_all_zone_status())
-        .unwrap_or_default();
+    let engine = state.engine.read().unwrap();
+    let zones = engine.get_guard_zones(&params.radar_id);
 
     let response = GuardZoneListResponse {
         radar_id: params.radar_id,
@@ -1213,12 +1208,11 @@ async fn create_guard_zone(
 ) -> Response {
     debug!("POST create guard zone {} for radar {}", zone.id, params.radar_id);
 
-    let mut processors = state.guard_zone_processors.write().unwrap();
-    let processor = processors
-        .entry(params.radar_id.clone())
-        .or_insert_with(GuardZoneProcessor::new);
+    // Ensure radar exists in engine
+    state.ensure_radar_in_engine(&params.radar_id);
 
-    processor.add_zone(zone.clone());
+    let mut engine = state.engine.write().unwrap();
+    engine.set_guard_zone(&params.radar_id, zone.clone());
     debug!("Created guard zone {} on radar {}", zone.id, params.radar_id);
 
     (StatusCode::CREATED, Json(zone)).into_response()
@@ -1232,11 +1226,9 @@ async fn get_guard_zone(
 ) -> Response {
     debug!("GET guard zone {} for radar {}", params.zone_id, params.radar_id);
 
-    let processors = state.guard_zone_processors.read().unwrap();
-    if let Some(processor) = processors.get(&params.radar_id) {
-        if let Some(status) = processor.get_zone_status(params.zone_id) {
-            return Json(status).into_response();
-        }
+    let engine = state.engine.read().unwrap();
+    if let Some(status) = engine.get_guard_zone(&params.radar_id, params.zone_id) {
+        return Json(status).into_response();
     }
 
     (StatusCode::NOT_FOUND, "Zone not found").into_response()
@@ -1251,16 +1243,15 @@ async fn update_guard_zone(
 ) -> Response {
     debug!("PUT update guard zone {} for radar {}", params.zone_id, params.radar_id);
 
-    let mut processors = state.guard_zone_processors.write().unwrap();
-    let processor = processors
-        .entry(params.radar_id.clone())
-        .or_insert_with(GuardZoneProcessor::new);
+    // Ensure radar exists in engine
+    state.ensure_radar_in_engine(&params.radar_id);
 
     // Ensure zone ID matches path
     let mut zone = zone;
     zone.id = params.zone_id;
 
-    processor.add_zone(zone);
+    let mut engine = state.engine.write().unwrap();
+    engine.set_guard_zone(&params.radar_id, zone);
     debug!("Updated guard zone {} on radar {}", params.zone_id, params.radar_id);
 
     StatusCode::OK.into_response()
@@ -1274,12 +1265,10 @@ async fn delete_guard_zone(
 ) -> Response {
     debug!("DELETE guard zone {} for radar {}", params.zone_id, params.radar_id);
 
-    let mut processors = state.guard_zone_processors.write().unwrap();
-    if let Some(processor) = processors.get_mut(&params.radar_id) {
-        if processor.remove_zone(params.zone_id) {
-            debug!("Deleted guard zone {} on radar {}", params.zone_id, params.radar_id);
-            return StatusCode::NO_CONTENT.into_response();
-        }
+    let mut engine = state.engine.write().unwrap();
+    if engine.remove_guard_zone(&params.radar_id, params.zone_id) {
+        debug!("Deleted guard zone {} on radar {}", params.zone_id, params.radar_id);
+        return StatusCode::NO_CONTENT.into_response();
     }
 
     (StatusCode::NOT_FOUND, "Zone not found").into_response()
@@ -1313,11 +1302,8 @@ async fn get_all_trails(
 ) -> Response {
     debug!("GET all trails for radar {}", params.radar_id);
 
-    let stores = state.trail_stores.read().unwrap();
-    let trails = stores
-        .get(&params.radar_id)
-        .map(|s| s.get_all_trail_data())
-        .unwrap_or_default();
+    let engine = state.engine.read().unwrap();
+    let trails = engine.get_all_trails(&params.radar_id);
 
     let response = TrailListResponse {
         radar_id: params.radar_id,
@@ -1336,11 +1322,9 @@ async fn get_trail(
 ) -> Response {
     debug!("GET trail for target {} on radar {}", params.target_id, params.radar_id);
 
-    let stores = state.trail_stores.read().unwrap();
-    if let Some(store) = stores.get(&params.radar_id) {
-        if let Some(trail_data) = store.get_trail_data(params.target_id) {
-            return Json(trail_data).into_response();
-        }
+    let engine = state.engine.read().unwrap();
+    if let Some(trail_data) = engine.get_trail(&params.radar_id, params.target_id) {
+        return Json(trail_data).into_response();
     }
 
     (StatusCode::NOT_FOUND, "Trail not found").into_response()
@@ -1354,11 +1338,9 @@ async fn clear_all_trails(
 ) -> Response {
     debug!("DELETE all trails for radar {}", params.radar_id);
 
-    let mut stores = state.trail_stores.write().unwrap();
-    if let Some(store) = stores.get_mut(&params.radar_id) {
-        store.clear_all();
-        debug!("Cleared all trails on radar {}", params.radar_id);
-    }
+    let mut engine = state.engine.write().unwrap();
+    engine.clear_all_trails(&params.radar_id);
+    debug!("Cleared all trails on radar {}", params.radar_id);
 
     StatusCode::NO_CONTENT.into_response()
 }
@@ -1371,11 +1353,9 @@ async fn clear_trail(
 ) -> Response {
     debug!("DELETE trail for target {} on radar {}", params.target_id, params.radar_id);
 
-    let mut stores = state.trail_stores.write().unwrap();
-    if let Some(store) = stores.get_mut(&params.radar_id) {
-        store.clear_trail(params.target_id);
-        debug!("Cleared trail for target {} on radar {}", params.target_id, params.radar_id);
-    }
+    let mut engine = state.engine.write().unwrap();
+    engine.clear_trail(&params.radar_id, params.target_id);
+    debug!("Cleared trail for target {} on radar {}", params.target_id, params.radar_id);
 
     StatusCode::NO_CONTENT.into_response()
 }
@@ -1388,10 +1368,9 @@ async fn get_trail_settings(
 ) -> Response {
     debug!("GET trail settings for radar {}", params.radar_id);
 
-    let stores = state.trail_stores.read().unwrap();
-    let settings = stores
-        .get(&params.radar_id)
-        .map(|s| s.settings().clone())
+    let engine = state.engine.read().unwrap();
+    let settings = engine
+        .get_trail_settings(&params.radar_id)
         .unwrap_or_default();
 
     Json(settings).into_response()
@@ -1406,12 +1385,11 @@ async fn set_trail_settings(
 ) -> Response {
     debug!("PUT trail settings for radar {}", params.radar_id);
 
-    let mut stores = state.trail_stores.write().unwrap();
-    let store = stores
-        .entry(params.radar_id.clone())
-        .or_insert_with(|| TrailStore::new(TrailSettings::default()));
+    // Ensure radar exists in engine
+    state.ensure_radar_in_engine(&params.radar_id);
 
-    store.update_settings(settings);
+    let mut engine = state.engine.write().unwrap();
+    engine.set_trail_settings(&params.radar_id, settings);
     debug!("Updated trail settings for radar {}", params.radar_id);
 
     StatusCode::OK.into_response()
@@ -1438,8 +1416,8 @@ async fn get_dual_range(
 ) -> Response {
     debug!("GET dual-range for radar {}", params.radar_id);
 
-    // Check if radar exists and supports dual-range
-    let (model_info, supported_ranges) = {
+    // Check if radar exists and supports dual-range (get model info from session)
+    let model_info = {
         let session = state.session.read().unwrap();
         let radars = session.radars.as_ref().unwrap();
 
@@ -1460,26 +1438,25 @@ async fn get_dual_range(
                         .into_response();
                 }
 
-                // Get supported ranges from the model
-                let ranges: Vec<u32> = model_info.range_table.to_vec();
-                (model_info.clone(), ranges)
+                model_info.clone()
             }
             None => return RadarError::NoSuchRadar(params.radar_id.to_string()).into_response(),
         }
     };
 
-    // Get or create controller
-    let controllers = state.dual_range_controllers.read().unwrap();
-    let dual_state = controllers
-        .get(&params.radar_id)
-        .map(|c| c.state().clone())
+    // Get dual-range state from engine
+    let engine = state.engine.read().unwrap();
+    let dual_state = engine
+        .get_dual_range(&params.radar_id)
+        .cloned()
         .unwrap_or_else(|| CoreDualRangeState {
             max_secondary_range: model_info.max_dual_range,
             ..Default::default()
         });
 
     // Filter ranges for secondary display
-    let available_ranges: Vec<u32> = supported_ranges
+    let available_ranges: Vec<u32> = model_info
+        .range_table
         .iter()
         .filter(|&&r| r <= model_info.max_dual_range)
         .copied()
@@ -1506,16 +1483,16 @@ async fn set_dual_range(
         params.radar_id, config.enabled, config.secondary_range
     );
 
-    // Check if radar exists and supports dual-range
-    let model_info = {
+    // Check if radar exists and supports dual-range (get model info from session)
+    let (model_name, model_info) = {
         let session = state.session.read().unwrap();
         let radars = session.radars.as_ref().unwrap();
 
         match radars.get_by_id(&params.radar_id) {
             Some(info) => {
                 let core_brand = to_core_brand(info.brand);
-                let model_name = info.controls.model_name();
-                let model = model_name
+                let model_name_opt = info.controls.model_name();
+                let model = model_name_opt
                     .as_deref()
                     .and_then(|m| models::get_model(core_brand, m))
                     .unwrap_or(&models::UNKNOWN_MODEL);
@@ -1528,19 +1505,20 @@ async fn set_dual_range(
                         .into_response();
                 }
 
-                model.clone()
+                (model_name_opt, model.clone())
             }
             None => return RadarError::NoSuchRadar(params.radar_id.to_string()).into_response(),
         }
     };
 
-    // Get or create controller and apply config
-    let mut controllers = state.dual_range_controllers.write().unwrap();
-    let controller = controllers.entry(params.radar_id.clone()).or_insert_with(|| {
-        DualRangeController::new(model_info.max_dual_range, model_info.range_table.to_vec())
-    });
+    // Ensure radar exists in engine with model info (creates dual_range controller)
+    if let Some(name) = &model_name {
+        state.ensure_radar_in_engine_with_model(&params.radar_id, name);
+    }
 
-    if !controller.apply_config(&config) {
+    // Apply config to engine
+    let mut engine = state.engine.write().unwrap();
+    if !engine.set_dual_range(&params.radar_id, &config) {
         return (
             StatusCode::BAD_REQUEST,
             format!(

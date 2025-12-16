@@ -161,7 +161,7 @@ impl FurunoDataReceiver {
         let mut buf = Vec::with_capacity(9000);
         let mut buf2 = Vec::with_capacity(9000);
 
-        let mut multicast_socket = self.multicast_socket.take();
+        let multicast_socket = self.multicast_socket.take();
         let mut broadcast_socket = self.broadcast_socket.take();
 
         log::debug!("Starting Furuno socket loop");

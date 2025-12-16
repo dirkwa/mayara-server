@@ -109,6 +109,7 @@ pub mod capabilities;
 pub mod connection;
 pub mod controllers;
 pub mod dual_range;
+pub mod engine;
 pub mod error;
 pub mod guard_zones;
 pub mod io;
@@ -127,6 +128,7 @@ pub use controllers::{
     NavicoController, NavicoControllerState, NavicoModel, RaymarineController,
     RaymarineControllerState, RaymarineVariant,
 };
+pub use engine::{ManagedRadar, RadarController, RadarEngine};
 pub use error::ParseError;
 pub use io::{IoError, IoProvider, TcpSocketHandle, UdpSocketHandle};
 pub use locator::{BrandStatus, DiscoveredRadar, LocatorEvent, LocatorStatus, RadarLocator};
