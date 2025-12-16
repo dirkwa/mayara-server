@@ -604,7 +604,10 @@ pub fn control_doppler_mode() -> ControlDefinition {
         default_mode: None,
         read_only: false,
         default: Some(serde_json::json!({"enabled": true, "mode": "approaching"})),
-        wire_hints: None,
+        wire_hints: Some(WireProtocolHint {
+            has_enabled: true,
+            ..Default::default()
+        }),
     }
 }
 
@@ -1836,6 +1839,11 @@ pub fn get_extended_control_for_brand(id: &str, brand: Brand) -> Option<ControlD
         "noTransmitEnd3" => Some(control_no_transmit_angle_for_brand(id, 3, false, brand)),
         "noTransmitStart4" => Some(control_no_transmit_angle_for_brand(id, 4, true, brand)),
         "noTransmitEnd4" => Some(control_no_transmit_angle_for_brand(id, 4, false, brand)),
+        // Furuno-specific controls
+        "scanSpeed" if brand == Brand::Furuno => Some(control_scan_speed_furuno()),
+        "interferenceRejection" if brand == Brand::Furuno => {
+            Some(control_interference_rejection_furuno())
+        }
         // Controls without brand-specific hints (use generic)
         _ => get_extended_control(id),
     }

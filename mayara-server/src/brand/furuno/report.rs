@@ -193,13 +193,14 @@ impl FurunoReportReceiver {
         self.set_value("txChannel", state.tx_channel as f32);
 
         // Apply Doppler mode (mode is "target" or "rain" string)
+        // Protocol uses: mode=0 for Target, mode=1 for Rain
+        // This is a compound control with enabled state, not auto mode
         let doppler_mode_value = match state.doppler_mode.mode.as_str() {
-            "off" => 0.0,
-            "target" | "targets" => 1.0,
-            "rain" => 2.0,
+            "target" | "targets" => 0.0,
+            "rain" => 1.0,
             _ => 0.0,
         };
-        self.set("dopplerMode", doppler_mode_value, Some(state.doppler_mode.enabled));
+        self.set_value_enabled("dopplerMode", doppler_mode_value, state.doppler_mode.enabled);
 
         // Apply no-transmit zones
         if !state.no_transmit_zones.zones.is_empty() {
@@ -266,6 +267,15 @@ impl FurunoReportReceiver {
             "bearingAlignment" => self.controller.set_bearing_alignment(&mut self.io, num_value as f64),
             "antennaHeight" => self.controller.set_antenna_height(&mut self.io, num_value),
             "autoAcquire" => self.controller.set_auto_acquire(&mut self.io, num_value != 0),
+            "dopplerMode" => {
+                // dopplerMode is a compound control: enabled (bool) + mode (enum)
+                // The GUI sends {"enabled": bool, "mode": "target"|"rain"}
+                // But here we receive the numeric value from the control's internal representation
+                // enabled is passed via the 'auto' parameter (repurposed for compound enabled state)
+                // mode: 0 = "target", 1 = "rain"
+                let mode = num_value;
+                self.controller.set_target_analyzer(&mut self.io, auto, mode);
+            }
             _ => return Err(RadarError::CannotSetControlType(id.to_string())),
         }
 
@@ -320,4 +330,28 @@ impl FurunoReportReceiver {
         };
     }
 
+    fn set_value_enabled(&mut self, control_type: &str, value: f32, enabled: bool) {
+        match self
+            .info
+            .controls
+            .set_value_auto_enabled(control_type, value, None, Some(enabled))
+        {
+            Err(e) => {
+                log::error!("{}: {}", self.key, e.to_string());
+            }
+            Ok(Some(())) => {
+                if log::log_enabled!(log::Level::Trace) {
+                    let control = self.info.controls.get(control_type).unwrap();
+                    log::trace!(
+                        "{}: Control '{}' new value {} enabled {}",
+                        self.key,
+                        control_type,
+                        control.value(),
+                        enabled
+                    );
+                }
+            }
+            Ok(None) => {}
+        };
+    }
 }

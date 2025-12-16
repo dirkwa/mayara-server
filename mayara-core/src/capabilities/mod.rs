@@ -5,7 +5,7 @@
 //! and clients use this schema to build dynamic UIs.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 pub mod builder;
 pub mod controls;
@@ -392,7 +392,8 @@ pub struct RadarStateV5 {
     pub status: String,
 
     /// Current control values (keyed by control ID)
-    pub controls: HashMap<String, serde_json::Value>,
+    /// Uses BTreeMap for stable JSON key ordering
+    pub controls: BTreeMap<String, serde_json::Value>,
 
     /// Controls currently disabled and why
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

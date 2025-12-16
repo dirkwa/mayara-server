@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "dev")]
 use tower_http::services::ServeDir;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     str::FromStr,
@@ -448,7 +448,8 @@ async fn get_radar_state(
     match radars.get_by_id(&params.radar_id) {
         Some(info) => {
             // Build the state dynamically from all registered controls
-            let mut controls = HashMap::new();
+            // Use BTreeMap for stable JSON key ordering
+            let mut controls = BTreeMap::new();
 
             // Helper to format a control value for the API response
             fn format_control_value(control_id: &str, control: &mayara_server::settings::Control) -> serde_json::Value {
@@ -823,17 +824,31 @@ async fn set_control_value(
                     serde_json::Value::Number(n) => (n.to_string(), None),
                     serde_json::Value::Bool(b) => (if *b { "1" } else { "0" }.to_string(), None),
                     serde_json::Value::Object(obj) => {
-                        // Compound control: {"mode": "auto"|"manual", "value": N}
-                        let mode = obj.get("mode").and_then(|v| v.as_str()).unwrap_or("manual");
-                        let auto = Some(mode == "auto");
-                        let value = obj.get("value")
-                            .map(|v| match v {
-                                serde_json::Value::Number(n) => n.to_string(),
-                                serde_json::Value::String(s) => s.clone(),
-                                _ => v.to_string(),
-                            })
-                            .unwrap_or_default();
-                        (value, auto)
+                        // Check if this is a dopplerMode compound control {"enabled": bool, "mode": "target"|"rain"}
+                        if params.control_id == "dopplerMode" {
+                            let enabled = obj.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let mode_str = obj.get("mode").and_then(|v| v.as_str()).unwrap_or("target");
+                            // Convert mode string to numeric: "target" = 0, "rain" = 1
+                            let mode_val = match mode_str {
+                                "target" | "targets" => 0,
+                                "rain" => 1,
+                                _ => 0,
+                            };
+                            // Pass enabled state via 'auto' field (repurposed), mode as value
+                            (mode_val.to_string(), Some(enabled))
+                        } else {
+                            // Standard compound control: {"mode": "auto"|"manual", "value": N}
+                            let mode = obj.get("mode").and_then(|v| v.as_str()).unwrap_or("manual");
+                            let auto = Some(mode == "auto");
+                            let value = obj.get("value")
+                                .map(|v| match v {
+                                    serde_json::Value::Number(n) => n.to_string(),
+                                    serde_json::Value::String(s) => s.clone(),
+                                    _ => v.to_string(),
+                                })
+                                .unwrap_or_default();
+                            (value, auto)
+                        }
                     },
                     _ => (request.value.to_string(), None),
                 };
