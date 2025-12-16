@@ -159,20 +159,38 @@ impl RadarState {
         }
 
         // Try gain response ($N63)
+        // In manual mode, preserve the commanded value - radar reports sensor readings,
+        // but we want to show what the user set, not what the sensor reads
         if let Some(cv) = parse_gain_response(line) {
-            self.gain = cv.into();
+            if self.gain.mode == "manual" && !cv.auto {
+                // Manual mode: only update mode confirmation, keep commanded value
+                // (value was already set when we sent the command)
+            } else {
+                // Auto mode or switching modes: update everything
+                self.gain = cv.into();
+            }
             return true;
         }
 
         // Try sea response ($N64)
+        // Same logic: in manual mode, preserve commanded value
         if let Some(cv) = parse_sea_response(line) {
-            self.sea = cv.into();
+            if self.sea.mode == "manual" && !cv.auto {
+                // Manual mode: keep commanded value
+            } else {
+                self.sea = cv.into();
+            }
             return true;
         }
 
         // Try rain response ($N65)
+        // Same logic: in manual mode, preserve commanded value
         if let Some(cv) = parse_rain_response(line) {
-            self.rain = cv.into();
+            if self.rain.mode == "manual" && !cv.auto {
+                // Manual mode: keep commanded value
+            } else {
+                self.rain = cv.into();
+            }
             return true;
         }
 
@@ -430,15 +448,48 @@ mod tests {
     fn test_update_from_gain_response() {
         let mut state = RadarState::new();
 
-        // Manual mode, value 75
+        // Initial state is auto, so manual mode response should update everything
         assert!(state.update_from_response("$N63,0,75,0,80,0"));
         assert_eq!(state.gain.mode, "manual");
         assert_eq!(state.gain.value, 75);
 
-        // Auto mode, value 50
+        // Auto mode, value 50 - should update everything
         assert!(state.update_from_response("$N63,1,50,0,80,0"));
         assert_eq!(state.gain.mode, "auto");
         assert_eq!(state.gain.value, 50);
+    }
+
+    #[test]
+    fn test_manual_mode_preserves_commanded_value() {
+        let mut state = RadarState::new();
+
+        // Simulate user setting gain to 95 in manual mode
+        state.gain.mode = "manual".to_string();
+        state.gain.value = 95;
+
+        // Radar responds with sensor reading (37), but we should preserve our commanded value
+        assert!(state.update_from_response("$N63,0,37,0,80,0"));
+        assert_eq!(state.gain.mode, "manual");
+        assert_eq!(state.gain.value, 95); // Preserved, not overwritten to 37
+
+        // Same for sea
+        state.sea.mode = "manual".to_string();
+        state.sea.value = 80;
+        assert!(state.update_from_response("$N64,0,40,0,80,0"));
+        assert_eq!(state.sea.mode, "manual");
+        assert_eq!(state.sea.value, 80); // Preserved
+
+        // Same for rain
+        state.rain.mode = "manual".to_string();
+        state.rain.value = 60;
+        assert!(state.update_from_response("$N65,0,25,0,80,0"));
+        assert_eq!(state.rain.mode, "manual");
+        assert_eq!(state.rain.value, 60); // Preserved
+
+        // But switching to auto SHOULD update
+        assert!(state.update_from_response("$N63,1,50,0,80,0"));
+        assert_eq!(state.gain.mode, "auto");
+        assert_eq!(state.gain.value, 50); // Updated because mode changed
     }
 
     #[test]

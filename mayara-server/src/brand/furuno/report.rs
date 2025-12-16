@@ -93,7 +93,10 @@ impl FurunoReportReceiver {
                     }
 
                     // Apply state updates from controller to server controls
-                    self.apply_controller_state(model_known);
+                    // and push to SharedRadars so REST API reflects current state
+                    if self.apply_controller_state(model_known) {
+                        self.radars.update(&self.info);
+                    }
                 },
 
                 r = command_rx.recv() => {
@@ -156,9 +159,11 @@ impl FurunoReportReceiver {
     }
 
     /// Apply controller state to server controls
-    fn apply_controller_state(&mut self, model_known: bool) {
+    /// Returns true if any control value changed (caller should update SharedRadars)
+    fn apply_controller_state(&mut self, model_known: bool) -> bool {
         // Clone state to avoid borrow checker issues with self.set_* methods
         let state = self.controller.radar_state().clone();
+        let mut changed = false;
 
         // Apply power state
         let power_status = match state.power {
@@ -167,34 +172,34 @@ impl FurunoReportReceiver {
             mayara_core::state::PowerState::Transmit => Status::Transmit,
             mayara_core::state::PowerState::Warming => Status::Preparing,
         };
-        self.set_value("power", power_status as i32 as f32);
+        changed |= self.set_value_changed("power", power_status as i32 as f32);
 
         // Apply range
         if state.range > 0 {
-            self.set_value("range", state.range as f32);
+            changed |= self.set_value_changed("range", state.range as f32);
         }
 
         // Apply gain, sea, rain with auto mode
-        self.set_value_auto("gain", state.gain.value as f32, state.gain.mode == "auto");
-        self.set_value_auto("sea", state.sea.value as f32, state.sea.mode == "auto");
-        self.set_value_auto("rain", state.rain.value as f32, state.rain.mode == "auto");
+        changed |= self.set_value_auto_changed("gain", state.gain.value as f32, state.gain.mode == "auto");
+        changed |= self.set_value_auto_changed("sea", state.sea.value as f32, state.sea.mode == "auto");
+        changed |= self.set_value_auto_changed("rain", state.rain.value as f32, state.rain.mode == "auto");
 
         // Model-specific controls are only available after model detection
         // (update_when_model_known adds these controls)
         if !model_known {
-            return;
+            return changed;
         }
 
         // Apply signal processing controls
-        self.set_value("noiseReduction", if state.noise_reduction { 1.0 } else { 0.0 });
-        self.set_value("interferenceRejection", if state.interference_rejection { 1.0 } else { 0.0 });
+        changed |= self.set_value_changed("noiseReduction", if state.noise_reduction { 1.0 } else { 0.0 });
+        changed |= self.set_value_changed("interferenceRejection", if state.interference_rejection { 1.0 } else { 0.0 });
 
         // Apply extended controls
-        self.set_value("beamSharpening", state.beam_sharpening as f32);
-        self.set_value("birdMode", state.bird_mode as f32);
-        self.set_value("scanSpeed", state.scan_speed as f32);
-        self.set_value("mainBangSuppression", state.main_bang_suppression as f32);
-        self.set_value("txChannel", state.tx_channel as f32);
+        changed |= self.set_value_changed("beamSharpening", state.beam_sharpening as f32);
+        changed |= self.set_value_changed("birdMode", state.bird_mode as f32);
+        changed |= self.set_value_changed("scanSpeed", state.scan_speed as f32);
+        changed |= self.set_value_changed("mainBangSuppression", state.main_bang_suppression as f32);
+        changed |= self.set_value_changed("txChannel", state.tx_channel as f32);
 
         // Apply Doppler mode (mode is "target" or "rain" string)
         // Protocol uses: mode=0 for Target, mode=1 for Rain
@@ -204,19 +209,21 @@ impl FurunoReportReceiver {
             "rain" => 1.0,
             _ => 0.0,
         };
-        self.set_value_enabled("dopplerMode", doppler_mode_value, state.doppler_mode.enabled);
+        changed |= self.set_value_enabled_changed("dopplerMode", doppler_mode_value, state.doppler_mode.enabled);
 
         // Apply no-transmit zones
         if !state.no_transmit_zones.zones.is_empty() {
             if let Some(z1) = state.no_transmit_zones.zones.first() {
-                self.set_value("noTransmitStart1", z1.start as f32);
-                self.set_value("noTransmitEnd1", z1.end as f32);
+                changed |= self.set_value_changed("noTransmitStart1", z1.start as f32);
+                changed |= self.set_value_changed("noTransmitEnd1", z1.end as f32);
             }
             if let Some(z2) = state.no_transmit_zones.zones.get(1) {
-                self.set_value("noTransmitStart2", z2.start as f32);
-                self.set_value("noTransmitEnd2", z2.end as f32);
+                changed |= self.set_value_changed("noTransmitStart2", z2.start as f32);
+                changed |= self.set_value_changed("noTransmitEnd2", z2.end as f32);
             }
         }
+
+        changed
     }
 
     /// Process control update from REST API
@@ -230,14 +237,24 @@ impl FurunoReportReceiver {
 
         match result {
             Ok(()) => {
-                // For write-only controls (Installation category), update the local state
-                // since the radar won't report these values back
-                if matches!(cv.id.as_str(), "bearingAlignment" | "antennaHeight" | "autoAcquire") {
-                    if let Ok(num_value) = cv.value.parse::<f32>() {
-                        self.set_value(&cv.id, num_value);
-                        // Push to SharedRadars so REST API reflects the new value
-                        self.radars.update(&self.info);
-                        log::debug!("{}: Updated write-only control {} = {}", self.key, cv.id, num_value);
+                // Update local state immediately after successful command
+                // The radar will report back eventually, but we want immediate UI feedback
+                if let Ok(num_value) = cv.value.parse::<f32>() {
+                    match cv.id.as_str() {
+                        // Write-only controls (Installation category)
+                        "bearingAlignment" | "antennaHeight" | "autoAcquire" => {
+                            self.set_value(&cv.id, num_value);
+                            self.radars.update(&self.info);
+                            log::debug!("{}: Updated write-only control {} = {}", self.key, cv.id, num_value);
+                        }
+                        // Compound controls with auto/manual mode
+                        "gain" | "sea" | "rain" => {
+                            let auto = cv.auto.unwrap_or(false);
+                            self.set_value_auto(&cv.id, num_value, auto);
+                            self.radars.update(&self.info);
+                            log::debug!("{}: Updated {} = {} auto={}", self.key, cv.id, num_value, auto);
+                        }
+                        _ => {}
                     }
                 }
                 self.info.controls.set_refresh(&cv.id);
@@ -344,29 +361,27 @@ impl FurunoReportReceiver {
         };
     }
 
-    fn set_value_enabled(&mut self, control_type: &str, value: f32, enabled: bool) {
-        match self
-            .info
-            .controls
-            .set_value_auto_enabled(control_type, value, None, Some(enabled))
-        {
-            Err(e) => {
-                log::error!("{}: {}", self.key, e.to_string());
-            }
-            Ok(Some(())) => {
-                if log::log_enabled!(log::Level::Trace) {
-                    let control = self.info.controls.get(control_type).unwrap();
-                    log::trace!(
-                        "{}: Control '{}' new value {} enabled {}",
-                        self.key,
-                        control_type,
-                        control.value(),
-                        enabled
-                    );
-                }
-            }
-            Ok(None) => {}
-        };
+    // Variants that return true if value changed (for apply_controller_state)
+
+    fn set_value_changed(&mut self, control_type: &str, value: f32) -> bool {
+        match self.info.controls.set(control_type, value, None) {
+            Ok(Some(())) => true,
+            _ => false,
+        }
+    }
+
+    fn set_value_auto_changed(&mut self, control_type: &str, value: f32, auto: bool) -> bool {
+        match self.info.controls.set_value_auto(control_type, auto, value) {
+            Ok(Some(())) => true,
+            _ => false,
+        }
+    }
+
+    fn set_value_enabled_changed(&mut self, control_type: &str, value: f32, enabled: bool) -> bool {
+        match self.info.controls.set_value_auto_enabled(control_type, value, None, Some(enabled)) {
+            Ok(Some(())) => true,
+            _ => false,
+        }
     }
 
     /// Restore persisted installation settings from Application Data API.

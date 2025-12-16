@@ -1649,12 +1649,17 @@ pub fn get_extended_control_with_zones(id: &str, zone_count: u8) -> Option<Contr
 pub fn control_gain_for_brand(brand: Brand) -> ControlDefinition {
     let mut def = control_gain();
     def.wire_hints = Some(match brand {
+        // Furuno uses 0-100 on wire (same as UI), no scaling needed
+        Brand::Furuno => WireProtocolHint {
+            has_auto: true,
+            ..Default::default()
+        },
         Brand::Raymarine => WireProtocolHint {
             scale_factor: Some(100.0),
             has_auto: true,
             ..Default::default()
         },
-        Brand::Furuno | Brand::Navico | Brand::Garmin => WireProtocolHint {
+        Brand::Navico | Brand::Garmin => WireProtocolHint {
             scale_factor: Some(255.0),
             has_auto: true,
             ..Default::default()
@@ -1668,7 +1673,12 @@ pub fn control_gain_for_brand(brand: Brand) -> ControlDefinition {
 pub fn control_sea_for_brand(brand: Brand) -> ControlDefinition {
     let mut def = control_sea();
     def.wire_hints = Some(match brand {
-        Brand::Furuno | Brand::Navico | Brand::Raymarine | Brand::Garmin => WireProtocolHint {
+        // Furuno uses 0-100 on wire (same as UI), no scaling needed
+        Brand::Furuno => WireProtocolHint {
+            has_auto: true,
+            ..Default::default()
+        },
+        Brand::Navico | Brand::Raymarine | Brand::Garmin => WireProtocolHint {
             scale_factor: Some(255.0),
             has_auto: true,
             ..Default::default()
@@ -1682,7 +1692,11 @@ pub fn control_sea_for_brand(brand: Brand) -> ControlDefinition {
 pub fn control_rain_for_brand(brand: Brand) -> ControlDefinition {
     let mut def = control_rain();
     def.wire_hints = Some(match brand {
-        Brand::Furuno | Brand::Navico | Brand::Raymarine | Brand::Garmin => WireProtocolHint {
+        // Furuno uses 0-100 on wire (same as UI), no scaling needed
+        Brand::Furuno => WireProtocolHint {
+            ..Default::default()
+        },
+        Brand::Navico | Brand::Raymarine | Brand::Garmin => WireProtocolHint {
             scale_factor: Some(255.0),
             ..Default::default()
         },

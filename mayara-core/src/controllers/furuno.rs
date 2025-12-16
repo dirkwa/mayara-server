@@ -234,18 +234,27 @@ impl FurunoController {
     pub fn set_gain<I: IoProvider>(&mut self, io: &mut I, value: i32, auto: bool) {
         let cmd = format_gain_command(value, auto);
         self.queue_command(io, cmd.trim());
+        // Update local state immediately for responsive UI
+        self.radar_state.gain.value = value;
+        self.radar_state.gain.mode = if auto { "auto".into() } else { "manual".into() };
     }
 
     /// Set radar sea clutter
     pub fn set_sea<I: IoProvider>(&mut self, io: &mut I, value: i32, auto: bool) {
         let cmd = format_sea_command(value, auto);
         self.queue_command(io, cmd.trim());
+        // Update local state immediately for responsive UI
+        self.radar_state.sea.value = value;
+        self.radar_state.sea.mode = if auto { "auto".into() } else { "manual".into() };
     }
 
     /// Set radar rain clutter
     pub fn set_rain<I: IoProvider>(&mut self, io: &mut I, value: i32, auto: bool) {
         let cmd = format_rain_command(value, auto);
         self.queue_command(io, cmd.trim());
+        // Update local state immediately for responsive UI
+        self.radar_state.rain.value = value;
+        self.radar_state.rain.mode = if auto { "auto".into() } else { "manual".into() };
     }
 
     /// Set RezBoost (beam sharpening) level
