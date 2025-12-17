@@ -23,8 +23,9 @@ fn main() {
         let npm_dir = PathBuf::from(&out_dir).join("npm_temp");
         fs::create_dir_all(&npm_dir).unwrap();
 
-        // Run npm install
-        let status = Command::new("npm")
+        // Run npm install - use npm.cmd on Windows
+        let npm_cmd = if cfg!(windows) { "npm.cmd" } else { "npm" };
+        let status = Command::new(npm_cmd)
             .args(["install", "@marineyachtradar/mayara-gui@latest"])
             .current_dir(&npm_dir)
             .status()
