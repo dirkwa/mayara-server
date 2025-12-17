@@ -24,12 +24,12 @@ The code shall:
 * Make it as simple as possible to add more radars. Our experience with `radar_pi` tells us that there are hardly any folks out there cruising with the right skillset to make this happen.
 * Be robust and error-free. Again, C++ allows you to be doing stuff illegally and for many years we had race conditions and other bugs in `radar_pi`. Writing the new server in Rust will hopefully make this an easy thing to do.
 
-## Radar Support
+## Radar Support 
 
 | Brand | Status | Models |
 |-------|--------|--------|
-| **Furuno** | ✅ Working | DRS4D-NXT, DRS6A-NXT, DRS12A-NXT, FAR series |
-| **Navico** | ✅ Working | BR24, 3G, 4G, HALO20, HALO24, HALO3/4/6, HALO3000+ |
+| **Furuno** | 🚧 Partial  | DRS4D-NXT, DRS6A-NXT, DRS12A-NXT, FAR series |
+| **Navico** | testers wanted | BR24, 3G, 4G, HALO20, HALO24, HALO3/4/6, HALO3000+ |
 | **Raymarine** | 🚧 Partial | Quantum 2, RD series (untested) |
 | **Garmin** | 📋 Planned | xHD series |
 
@@ -38,7 +38,8 @@ The code shall:
 Mayara can run in two modes:
 
 ### SignalK Plugin (mayara-signalk-wasm)
-- Runs as a WASM plugin inside SignalK server
+- No need to install the mayara-server
+- Runs as a WASM plugin inside SignalK server 3.0+
 - Integrates with SignalK's data model and notification system
 - Best for boats already running SignalK
 
@@ -46,6 +47,16 @@ Mayara can run in two modes:
 - Self-contained binary with built-in web server
 - No SignalK dependency required
 - Same API as SignalK mode - GUIs work unchanged
+
+## Download
+
+Pre-built binaries are available on the [Releases page](https://github.com/MarineYachtRadar/mayara-server/releases):
+
+- **Linux x86_64** - Static binary (works on most Linux distros)
+- **Linux ARM64** - For Raspberry Pi 4/5 (Raspbian/Debian)
+- **macOS Intel** - For Intel Macs
+- **macOS Apple Silicon** - For M1/M2/M3 Macs  
+- **Windows x86_64** - For Windows 10/11
 
 ## API
 

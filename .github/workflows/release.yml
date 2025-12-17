@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            name: linux-x86_64
+            use_alpine: true
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            name: linux-arm64
+            use_alpine: false
+          - os: macos-15
+            target: x86_64-apple-darwin
+            name: macos-intel
+            use_alpine: false
+          - os: macos-14
+            target: aarch64-apple-darwin
+            name: macos-arm64
+            use_alpine: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x86_64
+            use_alpine: false
+
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-node@v4
+      if: ${{ !matrix.use_alpine }}
+      with:
+        node-version: '20'
+
+    # Alpine build for static Linux binary
+    - name: Setup Alpine
+      if: ${{ matrix.use_alpine }}
+      uses: jirutka/setup-alpine@v1.2.0
+
+    - name: Build in Alpine
+      if: ${{ matrix.use_alpine }}
+      run: |
+        apk add git curl bash g++ musl-dev make perl nodejs npm
+        curl -sSf https://sh.rustup.rs | bash -s -- -y
+        cargo build --release -p mayara-server
+      shell: alpine.sh --root {0}
+
+    # Non-Alpine builds
+    - name: Install Rust
+      if: ${{ !matrix.use_alpine && matrix.os == 'ubuntu-24.04-arm' }}
+      run: |
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Build
+      if: ${{ !matrix.use_alpine }}
+      run: cargo build --release -p mayara-server
+
+    # Package
+    - name: Package (Unix)
+      if: ${{ matrix.os != 'windows-latest' }}
+      run: |
+        cd target/release
+        tar -czvf mayara-server-${{ matrix.name }}.tar.gz mayara-server
+
+    - name: Package (Windows)
+      if: ${{ matrix.os == 'windows-latest' }}
+      run: |
+        cd target/release
+        7z a mayara-server-${{ matrix.name }}.zip mayara-server.exe
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: mayara-server-${{ matrix.name }}
+        path: target/release/mayara-server-${{ matrix.name }}.*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: artifacts/**/*
+        generate_release_notes: true
