@@ -14,10 +14,10 @@ Add recording and playback functionality to mayara-server with two access paths:
 ## Use Cases
 
 - **SignalK developers** - Test `render()` functions with consistent recorded data
-- **OpenCPN plugin** (future) - Replay recordings for development/testing
+- **OpenCPN plugin** (future) - Replay recordings (connects to mayara-server directly, not SignalK)
+- **Other clients** - Any client connecting to mayara-server benefits from playback
 - **Demos/exhibitions** - Run standalone without SignalK or real radar
 - **Bug reports** - Users can share recordings to reproduce issues
-- **Any SignalK radar client** - Benefits from playback via standard Radar API
 
 ## User Requirements
 
@@ -41,30 +41,34 @@ Add recording and playback functionality to mayara-server with two access paths:
   │  └─────────────┘    └─────────────┘    └──────────────────────┘  │
   └──────────────────────────────────────────────────────────────────┘
 
-                         PLAYBACK PATHS (2 options)
+                         PLAYBACK PATH (Primary)
 
-  Option A: Standalone (mayara-server only)
   ┌──────────────────────────────────────────────────────────────────┐
-  │  mayara-server ─► Player ─► Virtual Radar ─► mayara-gui          │
+  │  mayara-server ─► Player ─► Virtual Radar ─► API (/v2/api/...)   │
+  │                                                   │               │
+  │                              ┌────────────────────┼───────────┐   │
+  │                              │                    │           │   │
+  │                              ▼                    ▼           ▼   │
+  │                        mayara-gui            OpenCPN      Others  │
+  │                        (browser)            (plugin)              │
   │                                                                   │
-  │  Good for: demos, exhibitions, testing without SignalK           │
+  │  All clients connect to mayara-server - playback appears as      │
+  │  a normal radar with ID prefix "playback-"                        │
   └──────────────────────────────────────────────────────────────────┘
 
-  Option B: SignalK (for radar API consumers)
+                    SIGNALK PLAYBACK PATH (Optional, for SignalK devs)
+
   ┌──────────────────────────────────────────────────────────────────┐
   │  .mrr file ─► SignalK Plugin ─► radarApi.register() ─► SignalK   │
-  │                    │                                        │     │
-  │                    │            binaryStreamManager         │     │
-  │                    └───────────────────────────────────────►│     │
+  │                                                             │     │
   │                                                             ▼     │
   │                                           ┌─────────────────────┐ │
-  │                                           │  Any Radar Consumer:│ │
-  │                                           │  - mayara-gui       │ │
-  │                                           │  - OpenCPN (future) │ │
-  │                                           │  - SignalK devs     │ │
+  │                                           │  SignalK Radar API  │ │
+  │                                           │  consumers only     │ │
   │                                           └─────────────────────┘ │
   │                                                                   │
-  │  Good for: SignalK developers testing render(), chart plotters   │
+  │  Good for: SignalK developers testing their render() functions   │
+  │  Note: OpenCPN connects to mayara-server, NOT SignalK            │
   └──────────────────────────────────────────────────────────────────┘
 
                          mayara-gui (both paths)
@@ -86,10 +90,17 @@ Add recording and playback functionality to mayara-server with two access paths:
 - Access to raw RadarMessage protobuf before any transformation
 - Can record even without SignalK running
 
-### Why playback in both mayara-server AND SignalK plugin?
+### Why playback in mayara-server (primary)?
 
-- **mayara-server playback**: Standalone demos, testing without SignalK
-- **SignalK plugin playback**: Registers as RadarProvider, making recordings available to ANY SignalK radar consumer (including future OpenCPN plugin)
+- All clients (mayara-gui, OpenCPN, others) connect to mayara-server directly
+- Playback appears as a normal radar - no special client support needed
+- Works standalone without SignalK
+
+### SignalK plugin playback (optional, for SignalK devs only)
+
+- Registers as RadarProvider in SignalK's Radar API
+- Only useful for developers testing SignalK Radar API consumers
+- **Note:** OpenCPN and other clients do NOT use SignalK - they connect to mayara-server
 
 ### No changes to SignalK Radar API needed
 
@@ -171,9 +182,43 @@ mayara-server/
 
 ## GUI Changes (mayara-gui)
 
+### Radar Display Changes
 1. **Playback detection** - Detect if viewing a playback radar (ID starts with "playback-")
 2. **Disable controls** - All controls disabled for playback radars, show "PLAYBACK" badge
-3. **New recordings page/tab** - Record, Playback, and File management UI
+
+### New Recordings Management Page
+Full-featured web GUI for recording and playback:
+
+- **Record tab**
+  - Select radar to record
+  - Start/Stop recording
+  - Set filename (optional, auto-generated default)
+  - Recording status and duration
+
+- **Playback tab**
+  - Load recording file
+  - Play / Pause / Stop controls
+  - Timeline slider for seeking
+  - Loop toggle
+  - Playback speed (0.5x, 1x, 2x, etc.)
+  - Current position and total duration
+
+- **Files tab**
+  - List recordings with metadata (duration, size, date, radar info)
+  - Create/navigate subfolders for organization
+  - Upload recordings from local machine
+  - Download recordings
+  - Rename files
+  - Delete files/folders
+  - Sort by name, date, size, duration
+
+### SignalK Plugin Integration
+The SignalK plugin (mayara-server-signalk-plugin) will proxy the recordings API from mayara-server, making the same GUI available within SignalK's webapp framework:
+
+- Same recordings management UI accessible at `/plugins/@marineyachtradar/signalk-plugin/recordings.html`
+- Proxies all `/v2/api/recordings/*` endpoints to mayara-server
+- Recordings stored on mayara-server (not SignalK)
+- Optional: SignalK-only playback mode for developers testing SignalK Radar API consumers
 
 ## Implementation Phases
 
@@ -214,7 +259,7 @@ mayara-server/
 
 5. **Compression**: Should frames be compressed (e.g., zstd)?
 
-6. **SignalK-only playback**: Is it valuable for the SignalK plugin to play `.mrr` files independently (without mayara-server)?
+6. **SignalK-only playback**: Is it valuable for the SignalK plugin to play `.mrr` files independently? (Only useful for SignalK Radar API developers - OpenCPN and other clients connect to mayara-server directly)
 
 ## Related
 
