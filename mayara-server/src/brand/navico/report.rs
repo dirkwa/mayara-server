@@ -368,6 +368,19 @@ impl NavicoReportReceiver {
             Some(c) => c,
             None => return Ok(()), // Replay mode, no controller
         };
+
+        // Handle power control first (string value, not numeric)
+        if cv.id.as_str() == "power" {
+            let transmit = if let Some(control) = self.info.controls.get("power") {
+                let index = control.enum_value_to_index(&cv.value).unwrap_or(1);
+                index == 2 // transmit is index 2
+            } else {
+                cv.value.to_lowercase() == "transmit"
+            };
+            controller.set_power(&mut self.io, transmit);
+            return Ok(());
+        }
+
         let value = cv
             .value
             .parse::<f32>()
@@ -397,16 +410,6 @@ impl NavicoReportReceiver {
         let deci_value = (value * 10.0) as i32;
 
         match cv.id.as_str() {
-            "power" => {
-                // Convert to transmit/standby
-                let transmit = if let Some(control) = self.info.controls.get("power") {
-                    let index = control.enum_value_to_index(&cv.value).unwrap_or(1);
-                    index == 2 // transmit is index 2
-                } else {
-                    cv.value.to_lowercase() == "transmit"
-                };
-                controller.set_power(&mut self.io, transmit);
-            }
             "range" => {
                 controller.set_range(&mut self.io, deci_value);
             }
