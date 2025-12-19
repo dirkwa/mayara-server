@@ -841,11 +841,10 @@ fn default_legend(session: Session, doppler: bool, pixel_values: u8) -> Legend {
     }
 
     let pixels_with_color = pixel_values - 1;
-    let one_third = pixels_with_color / 3;
-    let two_thirds = one_third * 2;
-    legend.strong_return = two_thirds;
+    let two_thirds = (pixels_with_color * 2) / 3;
+    legend.strong_return = two_thirds as u8;
 
-    // No return is black
+    // No return is black/transparent
     legend.pixels.push(Lookup {
         r#type: PixelType::Normal,
         color: Color {
@@ -856,43 +855,48 @@ fn default_legend(session: Session, doppler: bool, pixel_values: u8) -> Legend {
         },
     });
 
-    // Start colors at 1/3 intensity (like signalk-radar) for more visible returns
-    const MIN_INTENSITY: f64 = 85.0; // WHITE / 3
+    // Use continuous color blending for better visual distinction,
+    // especially important for low pixel counts like Navico's 16 values.
+    // Color progression: dark blue -> cyan -> green -> yellow -> red
+    // This gives more visual distinction than the previous thirds-based approach.
+    const MIN_INTENSITY: f64 = 85.0; // Start at 1/3 intensity for visibility
     const MAX_INTENSITY: f64 = 255.0;
-    let intensity_range = MAX_INTENSITY - MIN_INTENSITY;
 
     for v in 1..pixel_values {
+        // Normalize v to 0.0 - 1.0 range
+        let t = (v - 1) as f64 / (pixels_with_color - 1).max(1) as f64;
+
+        // Compute RGB using smooth transitions through the color spectrum
+        // This creates: blue (0.0) -> cyan (0.25) -> green (0.5) -> yellow (0.75) -> red (1.0)
+        let (r, g, b) = if t < 0.25 {
+            // Blue to Cyan: increase green
+            let local_t = t / 0.25;
+            (0.0, local_t, 1.0)
+        } else if t < 0.5 {
+            // Cyan to Green: decrease blue
+            let local_t = (t - 0.25) / 0.25;
+            (0.0, 1.0, 1.0 - local_t)
+        } else if t < 0.75 {
+            // Green to Yellow: increase red
+            let local_t = (t - 0.5) / 0.25;
+            (local_t, 1.0, 0.0)
+        } else {
+            // Yellow to Red: decrease green
+            let local_t = (t - 0.75) / 0.25;
+            (1.0, 1.0 - local_t, 0.0)
+        };
+
+        // Apply intensity scaling
+        let scale = |c: f64| -> u8 {
+            (MIN_INTENSITY + (MAX_INTENSITY - MIN_INTENSITY) * c) as u8
+        };
+
         legend.pixels.push(Lookup {
             r#type: PixelType::Normal,
             color: Color {
-                // red starts at 2/3 and peaks at end
-                r: if v >= two_thirds {
-                    (MIN_INTENSITY + intensity_range * (v - two_thirds) as f64 / one_third as f64)
-                        as u8
-                } else {
-                    0
-                },
-                // green starts at 1/3 and peaks at 2/3
-                g: if v >= one_third && v < two_thirds {
-                    (MIN_INTENSITY + intensity_range * (v - one_third) as f64 / one_third as f64)
-                        as u8
-                } else if v >= two_thirds {
-                    (MIN_INTENSITY
-                        + intensity_range * (pixels_with_color - v) as f64 / one_third as f64)
-                        as u8
-                } else {
-                    0
-                },
-                // blue peaks at 1/3
-                b: if v < one_third {
-                    (MIN_INTENSITY + intensity_range * v as f64 / one_third as f64) as u8
-                } else if v >= one_third && v < two_thirds {
-                    (MIN_INTENSITY
-                        + intensity_range * (two_thirds - v) as f64 / one_third as f64)
-                        as u8
-                } else {
-                    0
-                },
+                r: if r > 0.0 { scale(r) } else { 0 },
+                g: if g > 0.0 { scale(g) } else { 0 },
+                b: if b > 0.0 { scale(b) } else { 0 },
                 a: OPAQUE,
             },
         });

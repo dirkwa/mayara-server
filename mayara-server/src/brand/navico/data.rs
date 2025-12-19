@@ -209,8 +209,13 @@ impl NavicoDataReceiver {
                         Ok(data_update) => {
                             self.handle_data_update(data_update).await?;
                         }
-                        Err(_) => {
-                            panic!("data_update closed");
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            log::warn!("{}: data_update receiver lagged, skipped {} messages", self.key, n);
+                            // Continue - don't crash, just log the dropped messages
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            log::error!("{}: data_update channel closed unexpectedly", self.key);
+                            return Err(RadarError::Shutdown);
                         }
                     }
                 },
