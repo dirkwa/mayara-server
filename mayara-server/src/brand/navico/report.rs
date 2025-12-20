@@ -347,7 +347,7 @@ impl NavicoReportReceiver {
         let cv = control_update.control_value;
         let reply_tx = control_update.reply_tx;
 
-        log::debug!("{}: process_control_update id={} value={}", self.key, cv.id, cv.value);
+        log::info!("{}: process_control_update id={} value={}", self.key, cv.id, cv.value);
 
         match self.send_control_to_radar(&cv) {
             Ok(()) => {

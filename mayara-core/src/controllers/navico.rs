@@ -307,8 +307,8 @@ impl NavicoController {
     pub fn set_range<I: IoProvider>(&mut self, io: &mut I, range_dm: i32) {
         let mut cmd = vec![0x03, 0xC1];
         cmd.extend_from_slice(&range_dm.to_le_bytes());
+        io.info(&format!("[{}] Set range: {} dm (cmd: {:02X?})", self.radar_id, range_dm, cmd));
         self.send_command(io, &cmd);
-        io.debug(&format!("[{}] Set range: {} dm", self.radar_id, range_dm));
     }
 
     /// Set gain (0-255 scale)
