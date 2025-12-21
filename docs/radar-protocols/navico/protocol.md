@@ -391,10 +391,11 @@ Extended fields (21+ bytes, HALO only):
 | 19 | 2 | Doppler speed threshold (cm/s, 0-1594) |
 
 **Verified values (4G radar):**
-- Sidelobe suppression auto=on, 75%: offset 5 = `01`, offset 9 = `C0` (192 → 75.3%)
 - Sidelobe suppression auto=off, 37%: offset 5 = `00`, offset 9 = `5F` (95 → 37.3%)
 - Sidelobe suppression auto=off, 100%: offset 5 = `00`, offset 9 = `FF` (255 → 100%)
-- Formula: **percentage = value × 100 / 255**
+- Sidelobe suppression auto=on: offset 5 = `01`, offset 9 = current auto value
+- **Offset 5**: `00` = manual, `01` = auto
+- **Offset 9**: 0-255 value, formula: **percentage = value × 100 / 255**
 
 ### Report 07 - Statistics/Diagnostics (188 bytes)
 
