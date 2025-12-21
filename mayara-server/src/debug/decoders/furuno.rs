@@ -1,0 +1,396 @@
+//! Furuno protocol decoder.
+//!
+//! Decodes Furuno ASCII-based TCP protocol messages.
+
+use super::ProtocolDecoder;
+use crate::debug::{DecodedMessage, IoDirection};
+
+// =============================================================================
+// FurunoDecoder
+// =============================================================================
+
+/// Decoder for Furuno radar protocol.
+///
+/// Furuno uses ASCII text commands over TCP with format:
+/// - `$Sxx,...` - Set commands (sent to radar)
+/// - `$Rxx,...` - Request commands (sent to radar)
+/// - `$Nxx,...` - Response/notification (from radar)
+pub struct FurunoDecoder;
+
+impl ProtocolDecoder for FurunoDecoder {
+    fn decode(&self, data: &[u8], direction: IoDirection) -> DecodedMessage {
+        // Convert to string
+        let text = match std::str::from_utf8(data) {
+            Ok(s) => s.trim(),
+            Err(_) => {
+                return DecodedMessage::Unknown {
+                    reason: "Invalid UTF-8".to_string(),
+                    partial: Some(serde_json::json!({
+                        "length": data.len(),
+                        "first_bytes": format!("{:02x?}", &data[..data.len().min(8)])
+                    })),
+                };
+            }
+        };
+
+        // Empty or too short
+        if text.len() < 3 {
+            return DecodedMessage::Unknown {
+                reason: "Too short".to_string(),
+                partial: Some(serde_json::json!({"text": text})),
+            };
+        }
+
+        // Check for valid Furuno command prefix
+        if !text.starts_with('$') {
+            return DecodedMessage::Unknown {
+                reason: "Missing $ prefix".to_string(),
+                partial: Some(serde_json::json!({"text": text})),
+            };
+        }
+
+        // Determine message type from second character
+        let message_type = match text.chars().nth(1) {
+            Some('S') => "set",
+            Some('R') => "request",
+            Some('N') => "response",
+            Some('C') => "command",
+            Some(c) => {
+                return DecodedMessage::Unknown {
+                    reason: format!("Unknown command type: {}", c),
+                    partial: Some(serde_json::json!({"text": text})),
+                };
+            }
+            None => {
+                return DecodedMessage::Unknown {
+                    reason: "Missing command type".to_string(),
+                    partial: Some(serde_json::json!({"text": text})),
+                };
+            }
+        };
+
+        // Extract command ID (e.g., "S63" from "$S63,...")
+        let command_id = text
+            .get(1..)
+            .and_then(|s| s.split(',').next())
+            .map(|s| s.to_string());
+
+        // Parse the parameters
+        let parts: Vec<&str> = text.split(',').collect();
+        let params = if parts.len() > 1 {
+            parts[1..].iter().map(|s| *s).collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
+        // Try to decode known commands
+        let (description, fields) = decode_furuno_command(&command_id, &params, direction);
+
+        DecodedMessage::Furuno {
+            message_type: message_type.to_string(),
+            command_id,
+            fields,
+            description,
+        }
+    }
+
+    fn brand(&self) -> &'static str {
+        "furuno"
+    }
+}
+
+// =============================================================================
+// Command Decoding
+// =============================================================================
+
+/// Decode a specific Furuno command.
+fn decode_furuno_command(
+    command_id: &Option<String>,
+    params: &[&str],
+    _direction: IoDirection,
+) -> (Option<String>, serde_json::Value) {
+    let id = match command_id {
+        Some(id) => id.as_str(),
+        None => return (None, serde_json::json!({"params": params})),
+    };
+
+    // Command number (without S/R/N prefix)
+    let cmd_num = id.get(1..).unwrap_or("");
+
+    match cmd_num {
+        // Power/Status
+        "01" => {
+            let transmitting = params.first().map(|s| *s == "1").unwrap_or(false);
+            (
+                Some(format!(
+                    "{}",
+                    if transmitting {
+                        "Transmit ON"
+                    } else {
+                        "Standby"
+                    }
+                )),
+                serde_json::json!({"transmitting": transmitting}),
+            )
+        }
+
+        // Range
+        "02" | "36" => {
+            let range_index = params.first().and_then(|s| s.parse::<i32>().ok());
+            (
+                Some(format!("Range index: {:?}", range_index)),
+                serde_json::json!({"rangeIndex": range_index, "params": params}),
+            )
+        }
+
+        // Gain
+        "63" => decode_gain_sea_rain("Gain", params),
+
+        // Sea clutter
+        "64" => decode_gain_sea_rain("Sea", params),
+
+        // Rain clutter
+        "65" => decode_gain_sea_rain("Rain", params),
+
+        // Noise reduction
+        "66" => {
+            let enabled = params.first().map(|s| *s == "1").unwrap_or(false);
+            (
+                Some(format!(
+                    "Noise reduction: {}",
+                    if enabled { "ON" } else { "OFF" }
+                )),
+                serde_json::json!({"enabled": enabled}),
+            )
+        }
+
+        // Interference rejection
+        "67" => {
+            let enabled = params.first().map(|s| *s == "1").unwrap_or(false);
+            (
+                Some(format!(
+                    "Interference rejection: {}",
+                    if enabled { "ON" } else { "OFF" }
+                )),
+                serde_json::json!({"enabled": enabled}),
+            )
+        }
+
+        // RezBoost / Beam Sharpening
+        "68" => {
+            let level = params.first().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+            let level_name = match level {
+                0 => "OFF",
+                1 => "Low",
+                2 => "Medium",
+                3 => "High",
+                _ => "Unknown",
+            };
+            (
+                Some(format!("Beam Sharpening: {}", level_name)),
+                serde_json::json!({"level": level, "levelName": level_name}),
+            )
+        }
+
+        // Bird Mode
+        "69" => {
+            let level = params.first().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+            let level_name = match level {
+                0 => "OFF",
+                1 => "Low",
+                2 => "Medium",
+                3 => "High",
+                _ => "Unknown",
+            };
+            (
+                Some(format!("Bird Mode: {}", level_name)),
+                serde_json::json!({"level": level, "levelName": level_name}),
+            )
+        }
+
+        // Target Analyzer / Doppler Mode
+        "6A" => {
+            let enabled = params.first().map(|s| *s == "1").unwrap_or(false);
+            let mode = params.get(1).and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+            let mode_name = match mode {
+                0 => "Target",
+                1 => "Rain",
+                _ => "Unknown",
+            };
+            (
+                Some(format!(
+                    "Target Analyzer: {} ({})",
+                    if enabled { "ON" } else { "OFF" },
+                    mode_name
+                )),
+                serde_json::json!({"enabled": enabled, "mode": mode, "modeName": mode_name}),
+            )
+        }
+
+        // Scan speed
+        "6B" => {
+            let speed = params.first().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+            let speed_name = match speed {
+                0 => "24 RPM",
+                2 => "Auto",
+                _ => "Unknown",
+            };
+            (
+                Some(format!("Scan Speed: {}", speed_name)),
+                serde_json::json!({"speed": speed, "speedName": speed_name}),
+            )
+        }
+
+        // Main bang suppression
+        "6C" => {
+            let value = params.first().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+            (
+                Some(format!("Main Bang Suppression: {}%", value)),
+                serde_json::json!({"value": value}),
+            )
+        }
+
+        // Login response
+        "LOGIN" => (
+            Some("Login message".to_string()),
+            serde_json::json!({"params": params}),
+        ),
+
+        // Keep-alive
+        "KA" | "KEEPALIVE" => (
+            Some("Keep-alive".to_string()),
+            serde_json::json!({}),
+        ),
+
+        // Operating time
+        "5B" => {
+            let seconds = params.first().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+            let hours = seconds / 3600;
+            (
+                Some(format!("Operating time: {} hours", hours)),
+                serde_json::json!({"seconds": seconds, "hours": hours}),
+            )
+        }
+
+        // Unknown command
+        _ => (
+            None,
+            serde_json::json!({
+                "commandId": cmd_num,
+                "params": params,
+                "note": "Unknown command ID"
+            }),
+        ),
+    }
+}
+
+/// Decode gain/sea/rain commands which have similar structure.
+fn decode_gain_sea_rain(name: &str, params: &[&str]) -> (Option<String>, serde_json::Value) {
+    let auto = params.first().map(|s| *s == "1").unwrap_or(false);
+    let value = params.get(1).and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+
+    (
+        Some(format!(
+            "{}: {} ({})",
+            name,
+            value,
+            if auto { "Auto" } else { "Manual" }
+        )),
+        serde_json::json!({
+            "auto": auto,
+            "value": value,
+            "allParams": params
+        }),
+    )
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_decode_set_gain() {
+        let decoder = FurunoDecoder;
+        let msg = decoder.decode(b"$S63,0,50,0,80,0\r\n", IoDirection::Send);
+
+        match msg {
+            DecodedMessage::Furuno {
+                message_type,
+                command_id,
+                description,
+                ..
+            } => {
+                assert_eq!(message_type, "set");
+                assert_eq!(command_id, Some("S63".to_string()));
+                assert!(description.unwrap().contains("Gain"));
+            }
+            _ => panic!("Expected Furuno message"),
+        }
+    }
+
+    #[test]
+    fn test_decode_response_gain() {
+        let decoder = FurunoDecoder;
+        let msg = decoder.decode(b"$N63,1,75,0,80,0\r\n", IoDirection::Recv);
+
+        match msg {
+            DecodedMessage::Furuno {
+                message_type,
+                command_id,
+                description,
+                ..
+            } => {
+                assert_eq!(message_type, "response");
+                assert_eq!(command_id, Some("N63".to_string()));
+                assert!(description.unwrap().contains("Auto"));
+            }
+            _ => panic!("Expected Furuno message"),
+        }
+    }
+
+    #[test]
+    fn test_decode_power() {
+        let decoder = FurunoDecoder;
+        let msg = decoder.decode(b"$N01,1\r\n", IoDirection::Recv);
+
+        match msg {
+            DecodedMessage::Furuno {
+                description, fields, ..
+            } => {
+                assert!(description.unwrap().contains("Transmit"));
+                assert_eq!(fields["transmitting"], true);
+            }
+            _ => panic!("Expected Furuno message"),
+        }
+    }
+
+    #[test]
+    fn test_decode_invalid_utf8() {
+        let decoder = FurunoDecoder;
+        let msg = decoder.decode(&[0x80, 0x81, 0x82], IoDirection::Recv);
+
+        match msg {
+            DecodedMessage::Unknown { reason, .. } => {
+                assert!(reason.contains("UTF-8"));
+            }
+            _ => panic!("Expected Unknown message"),
+        }
+    }
+
+    #[test]
+    fn test_decode_unknown_command() {
+        let decoder = FurunoDecoder;
+        let msg = decoder.decode(b"$SFF,1,2,3\r\n", IoDirection::Send);
+
+        match msg {
+            DecodedMessage::Furuno { command_id, .. } => {
+                assert_eq!(command_id, Some("SFF".to_string()));
+            }
+            _ => panic!("Expected Furuno message"),
+        }
+    }
+}

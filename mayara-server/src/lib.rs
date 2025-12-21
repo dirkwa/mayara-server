@@ -127,6 +127,9 @@ pub mod settings;
 pub mod storage;
 pub mod tokio_io;
 pub mod util;
+
+#[cfg(feature = "dev")]
+pub mod debug;
 use rust_embed::RustEmbed;
 use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
