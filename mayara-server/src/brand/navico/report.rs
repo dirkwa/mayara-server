@@ -34,7 +34,21 @@ use mayara_core::protocol::navico::{
     INFO_ADDR, INFO_PORT, SPEED_ADDR_A, SPEED_PORT_A,
 };
 
+// Debug I/O wrapper for protocol analysis (dev feature only)
+#[cfg(feature = "dev")]
+use crate::debug::DebugIoProvider;
+
+/// Type alias for the I/O provider used by NavicoReportReceiver.
+/// When dev feature is enabled, wraps TokioIoProvider with DebugIoProvider.
+#[cfg(feature = "dev")]
+type NavicoIoProvider = DebugIoProvider<TokioIoProvider>;
+
+#[cfg(not(feature = "dev"))]
+type NavicoIoProvider = TokioIoProvider;
+
 pub struct NavicoReportReceiver {
+    #[allow(dead_code)]
+    session: Session, // Kept for debug_hub access
     replay: bool,
     transmit_after_range_detection: bool,
     info: RadarInfo,
@@ -49,8 +63,8 @@ pub struct NavicoReportReceiver {
     model: Model,
     /// Unified controller from mayara-core
     controller: Option<NavicoController>,
-    /// I/O provider for the controller
-    io: TokioIoProvider,
+    /// I/O provider for the controller (wrapped with DebugIoProvider when dev feature enabled)
+    io: NavicoIoProvider,
     info_sender: Option<Information>,
     data_tx: broadcast::Sender<DataUpdate>,
     control_update_rx: broadcast::Receiver<ControlUpdate>,
@@ -127,6 +141,27 @@ impl NavicoReportReceiver {
             log::debug!("{}: No controller, replay mode", key);
             None
         };
+
+        // Create I/O provider - wrapped with DebugIoProvider when dev feature enabled
+        #[cfg(feature = "dev")]
+        let io = {
+            let inner = TokioIoProvider::new();
+            if let Some(hub) = session.debug_hub() {
+                log::debug!("{}: Using DebugIoProvider for protocol analysis", key);
+                DebugIoProvider::new(inner, hub, key.clone(), "navico".to_string())
+            } else {
+                // Fallback if debug_hub not initialized (shouldn't happen)
+                log::warn!("{}: DebugHub not available, using plain TokioIoProvider", key);
+                DebugIoProvider::new(
+                    inner,
+                    std::sync::Arc::new(crate::debug::DebugHub::new()),
+                    key.clone(),
+                    "navico".to_string(),
+                )
+            }
+        };
+
+        #[cfg(not(feature = "dev"))]
         let io = TokioIoProvider::new();
 
         let info_sender = if !replay {
@@ -142,6 +177,7 @@ impl NavicoReportReceiver {
 
         let now = Instant::now();
         NavicoReportReceiver {
+            session,
             replay,
             transmit_after_range_detection: false,
             key,
