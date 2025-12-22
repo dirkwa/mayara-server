@@ -119,6 +119,38 @@ Doppler modes:
 | 1 | Both (show approaching and receding) |
 | 2 | Approaching only |
 
+## Control Categories
+
+Radar settings are categorized by their purpose and persistence:
+
+### Installation Settings (Report 04)
+These are configured once during radar installation and rarely changed:
+- **Bearing alignment** - Corrects for antenna mounting offset (deci-degrees, 0-3599)
+- **Antenna height** - Height above waterline in millimeters (affects sea clutter calculations)
+- **Accent light** - HALO pedestal LED brightness (0-3, HALO only)
+
+### Runtime Controls (Report 02)
+Operational settings adjusted during normal use:
+- **Gain** - Signal amplification (0-100%, auto or manual)
+- **Sea clutter** - Sea return suppression (auto: harbor/offshore, or manual 0-100%)
+- **Rain clutter** - Precipitation suppression (0-100%)
+- **Interference rejection** - Filter other radar interference (off/low/medium/high)
+- **Target expansion** - Make small targets more visible (off/on)
+- **Target boost** - Amplify weak targets (off/low/high)
+
+### Advanced Settings (Report 08)
+Performance tuning options:
+- **Sidelobe suppression** - Reduce sidelobe artifacts (0-100%, auto or manual)
+- **Scan speed** - Antenna rotation speed (normal/fast)
+- **Sea state** - Sea condition preset (calm/moderate/rough)
+- **Noise rejection** - Filter noise (off/low/medium/high)
+- **Target separation** - Distinguish close targets (off/low/medium/high)
+- **Doppler mode** - Motion detection (off/both/approaching, HALO only)
+
+### Blanking Zones (Report 06)
+No-transmit sectors to protect crew or equipment:
+- Up to 4 sectors with start/end angles
+
 ## Spoke Data Protocol
 
 ### Frame Structure
@@ -208,7 +240,9 @@ All reports have a 2-byte header:
 | 0x03 | 129 | Model info (model, hours, firmware) |
 | 0x04 | 66 | Installation settings (bearing, antenna height) |
 | 0x06 | 68/74 | Blanking zones and radar name |
+| 0x07 | 188 | Statistics/diagnostics (4G verified) |
 | 0x08 | 18/21/22 | Advanced settings (scan speed, doppler) |
+| 0x09 | 13 | Unknown (tuning/calibration?) |
 
 ### Report 01 - Status (18 bytes)
 
@@ -282,17 +316,43 @@ Model bytes:
 
 ### Report 04 - Installation (66 bytes)
 
+Settings are per-radar (A/B can have different values on dual-range radars).
+
 | Offset | Size | Description |
 |--------|------|-------------|
 | 0 | 1 | Type (0x04) |
 | 1 | 1 | Command (0xC4) |
-| 2 | 4 | Unknown |
-| 6 | 2 | Bearing alignment (deci-degrees, signed) |
-| 8 | 2 | Unknown |
-| 10 | 2 | Antenna height (decimeters) |
-| 12 | 7 | Unknown |
-| 19 | 1 | Accent light (HALO only) |
-| 20 | 46 | Unknown |
+| 2 | 4 | Unknown (always 0) |
+| 6 | 2 | Bearing alignment (deci-degrees, u16, 0-3599) |
+| 8 | 2 | Unknown (always 0) |
+| 10 | 2 | Antenna height (millimeters, u16) |
+| 12 | 7 | Unknown (always 0) |
+| 19 | 1 | Accent light (HALO only, 0-3) |
+| 20 | 6 | Unknown (always 0) |
+| 26 | 4 | Unknown per-radar value (u32, differs A vs B) |
+| 30 | 4 | Unknown per-radar value (u32, differs A vs B) |
+| 34 | 32 | Unknown (always 0) |
+
+**Verified values (4G radar):**
+- Antenna height 4m: offset 10-11 = `A0 0F` = 4000 mm
+- Antenna height 10m: offset 10-11 = `10 27` = 10000 mm
+- Bearing alignment 0°: offset 6-7 = `00 00` = 0
+- Bearing alignment +90°: offset 6-7 = `84 03` = 900 deci-degrees
+- Bearing alignment -123°: offset 6-7 = `42 09` = 2370 deci-degrees (= 237° = 360-123)
+
+**Note:** Bearing alignment uses unsigned 0-3599 range. Negative values are
+represented as 360° - |value|. For example, -123° is stored as 237° (2370).
+
+**Observed per-radar values at offsets 26-33 (4G):**
+- Radar A: offset 26 = 20, offset 30 = 180
+- Radar B: offset 26 = 10, offset 30 = 10
+- These values do NOT correspond to X-Axis/Y-Axis antenna position settings
+- Purpose unknown (possibly timing, tuning, or guard zone parameters)
+
+**Note:** The chartplotter has X-Axis and Y-Axis antenna position settings
+(offset from ship center, supports positive/negative values). These are
+**NOT transmitted in Report 04** - they may be chartplotter-internal only
+or stored in a different report.
 
 ### Report 06 - Blanking Zones (68 or 74 bytes)
 
@@ -329,6 +389,50 @@ Extended fields (21+ bytes, HALO only):
 |--------|------|-------------|
 | 18 | 1 | Doppler state |
 | 19 | 2 | Doppler speed threshold (cm/s, 0-1594) |
+
+**Verified values (4G radar):**
+- Sidelobe suppression auto=on, 75%: offset 5 = `01`, offset 9 = `C0` (192 → 75.3%)
+- Sidelobe suppression auto=off, 37%: offset 5 = `00`, offset 9 = `5F` (95 → 37.3%)
+- Sidelobe suppression auto=off, 100%: offset 5 = `00`, offset 9 = `FF` (255 → 100%)
+- Formula: **percentage = value × 100 / 255**
+
+### Report 07 - Statistics/Diagnostics (188 bytes)
+
+Discovered on 4G radar. Contains mostly zeros with data at specific offsets.
+
+| Offset | Size | Description |
+|--------|------|-------------|
+| 0 | 1 | Type (0x07) |
+| 1 | 1 | Command (0xC4) |
+| 2 | 67 | Unknown (zeros) |
+| 69 | 1 | Unknown (0x40 = 64 observed) |
+| 70 | 66 | Unknown (zeros) |
+| 136 | 4 | Counter/statistic 1 (u32, ~442778 observed) |
+| 140 | 4 | Counter/statistic 2 (u32, ~238698 observed) |
+| 144 | 4 | Counter/statistic 3 (u32, ~18415 observed) |
+| 148 | 4 | Unknown (40 observed) |
+| 152 | 4 | Per-radar value (A=45, B=40 observed) |
+| 156 | 4 | Per-radar value (A=45, B=40 observed) |
+| 160 | 4 | Unknown (20 observed) |
+| 164 | 24 | Unknown (zeros) |
+
+**Note:** The counter values at 136-147 may be related to packet counts or
+timing statistics. Values at 152-159 differ between Radar A and B.
+
+### Report 09 - Unknown (13 bytes)
+
+Purpose unknown. May contain tuning or calibration indices.
+
+| Offset | Size | Description |
+|--------|------|-------------|
+| 0 | 1 | Type (0x09) |
+| 1 | 1 | Command (0xC4) |
+| 2 | 2 | Value 1 (u16, observed: 1) |
+| 4 | 2 | Value 2 (u16, observed: 1) |
+| 6 | 2 | Value 3 (u16, observed: 2) |
+| 8 | 2 | Value 4 (u16, observed: 4) |
+| 10 | 2 | Value 5 (u16, observed: 0) |
+| 12 | 1 | Unknown (0) |
 
 ## Command Protocol (UDP)
 

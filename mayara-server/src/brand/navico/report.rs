@@ -776,6 +776,13 @@ impl NavicoReportReceiver {
             return Ok(());
         }
         let report_identification = data[0];
+
+        // Debug: dump raw report bytes for protocol analysis
+        if log::log_enabled!(log::Level::Trace) {
+            log::trace!("{}: Report {:02X} raw ({} bytes): {:02X?}",
+                self.key, report_identification, data.len(), data);
+        }
+
         match report_identification {
             REPORT_01_C4_18 => {
                 return self.process_report_01().await;
