@@ -233,17 +233,25 @@ pub struct RangeSpec {
 }
 
 /// Enum value with label and optional description
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct EnumValue {
     /// The actual value (string or number)
+    #[serde(default)]
     pub value: serde_json::Value,
 
     /// Human-readable label
+    #[serde(default)]
     pub label: String,
 
     /// Optional description
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+
+    /// Whether this value is read-only (can be reported but not set)
+    /// For power control: "off" and "warming" are read-only states
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub read_only: bool,
 }
 
 /// Property definition for compound controls
