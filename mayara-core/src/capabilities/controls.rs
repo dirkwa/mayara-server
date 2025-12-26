@@ -851,6 +851,133 @@ pub fn control_preset_mode() -> ControlDefinition {
     }
 }
 
+/// Preset mode with brand/model-specific available values
+///
+/// Different radar families support different preset modes:
+/// - Navico HALO: Custom, Harbor, Offshore, Weather, Bird
+/// - Navico 4G/3G: Custom, Harbor, Offshore
+/// - Raymarine Quantum: Harbor, Coastal, Offshore
+pub fn control_preset_mode_for_model(brand: Brand, model_family: Option<&str>) -> ControlDefinition {
+    let mut def = control_preset_mode();
+
+    def.values = Some(match brand {
+        Brand::Navico => {
+            let is_halo = model_family.map_or(false, |f| f.contains("HALO"));
+            let mut values = vec![
+                EnumValue {
+                    value: "custom".into(),
+                    label: "Custom".into(),
+                    description: Some("Full manual control of all settings".into()),
+                    read_only: false,
+                },
+                EnumValue {
+                    value: "harbor".into(),
+                    label: "Harbor".into(),
+                    description: Some("Optimized for busy ports with fast scanning".into()),
+                    read_only: false,
+                },
+                EnumValue {
+                    value: "offshore".into(),
+                    label: "Offshore".into(),
+                    description: Some("Balanced settings for open water navigation".into()),
+                    read_only: false,
+                },
+            ];
+            if is_halo {
+                values.push(EnumValue {
+                    value: "weather".into(),
+                    label: "Weather".into(),
+                    description: Some("Enhanced sensitivity for detecting precipitation".into()),
+                    read_only: false,
+                });
+                values.push(EnumValue {
+                    value: "bird".into(),
+                    label: "Bird".into(),
+                    description: Some("Optimized for detecting bird flocks".into()),
+                    read_only: false,
+                });
+            }
+            values
+        }
+        Brand::Raymarine => {
+            vec![
+                EnumValue {
+                    value: "harbor".into(),
+                    label: "Harbor".into(),
+                    description: Some("Optimized for busy ports".into()),
+                    read_only: false,
+                },
+                EnumValue {
+                    value: "coastal".into(),
+                    label: "Coastal".into(),
+                    description: Some("Balanced settings for coastal navigation".into()),
+                    read_only: false,
+                },
+                EnumValue {
+                    value: "offshore".into(),
+                    label: "Offshore".into(),
+                    description: Some("Long range open water settings".into()),
+                    read_only: false,
+                },
+            ]
+        }
+        // Furuno and Garmin don't have preset modes
+        Brand::Furuno | Brand::Garmin => vec![],
+    });
+
+    def
+}
+
+/// Target expansion with model-specific available values
+///
+/// - Navico HALO: Off, On, High
+/// - Navico 4G/3G, Raymarine: Off, On only
+pub fn control_target_expansion_for_model(brand: Brand, model_family: Option<&str>) -> ControlDefinition {
+    let mut def = control_target_expansion();
+
+    let is_halo = brand == Brand::Navico && model_family.map_or(false, |f| f.contains("HALO"));
+
+    def.values = Some(if is_halo {
+        vec![
+            EnumValue {
+                value: 0.into(),
+                label: "Off".into(),
+                description: None,
+                read_only: false,
+            },
+            EnumValue {
+                value: 1.into(),
+                label: "On".into(),
+                description: None,
+                read_only: false,
+            },
+            EnumValue {
+                value: 2.into(),
+                label: "High".into(),
+                description: Some("Maximum expansion".into()),
+                read_only: false,
+            },
+        ]
+    } else {
+        vec![
+            EnumValue {
+                value: 0.into(),
+                label: "Off".into(),
+                description: None,
+                read_only: false,
+            },
+            EnumValue {
+                value: 1.into(),
+                label: "On".into(),
+                description: None,
+                read_only: false,
+            },
+        ]
+    });
+
+    def
+}
+
 /// Target separation: distinguishes closely-spaced targets (Navico, Raymarine)
 pub fn control_target_separation() -> ControlDefinition {
     ControlDefinition {
@@ -2080,6 +2207,36 @@ pub fn get_control_for_brand(id: &str, brand: Brand) -> Option<ControlDefinition
     get_base_control_for_brand(id, brand).or_else(|| get_extended_control_for_brand(id, brand))
 }
 
+/// Get extended control with brand and model-specific configuration
+///
+/// This variant filters enum values based on model family (e.g., HALO vs 4G).
+/// Use this when you know the specific model family to get accurate enum options.
+#[inline(never)]
+pub fn get_extended_control_for_model(
+    id: &str,
+    brand: Brand,
+    model_family: Option<&str>,
+) -> Option<ControlDefinition> {
+    match id {
+        // Controls with model-specific enum values
+        "presetMode" => Some(control_preset_mode_for_model(brand, model_family)),
+        "targetExpansion" => Some(control_target_expansion_for_model(brand, model_family)),
+        // Fall back to brand-specific controls for others
+        _ => get_extended_control_for_brand(id, brand),
+    }
+}
+
+/// Get any control with brand and model-specific configuration
+#[inline(never)]
+pub fn get_control_for_model(
+    id: &str,
+    brand: Brand,
+    model_family: Option<&str>,
+) -> Option<ControlDefinition> {
+    get_base_control_for_brand(id, brand)
+        .or_else(|| get_extended_control_for_model(id, brand, model_family))
+}
+
 /// Base control IDs that all radars of a brand support (before model is known)
 const BASE_CONTROL_IDS: &[&str] = &["power", "gain", "sea", "rain"];
 
@@ -2123,4 +2280,51 @@ pub fn get_all_controls_for_model(
     }
 
     controls
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_preset_mode_halo_has_weather_bird() {
+        let def = control_preset_mode_for_model(Brand::Navico, Some("HALO"));
+        let values = def.values.unwrap();
+        assert_eq!(values.len(), 5); // custom, harbor, offshore, weather, bird
+        assert!(values.iter().any(|v| v.value == "weather"));
+        assert!(values.iter().any(|v| v.value == "bird"));
+    }
+
+    #[test]
+    fn test_preset_mode_4g_no_weather_bird() {
+        let def = control_preset_mode_for_model(Brand::Navico, Some("4G"));
+        let values = def.values.unwrap();
+        assert_eq!(values.len(), 3); // custom, harbor, offshore only
+        assert!(!values.iter().any(|v| v.value == "weather"));
+        assert!(!values.iter().any(|v| v.value == "bird"));
+    }
+
+    #[test]
+    fn test_target_expansion_halo_has_high() {
+        let def = control_target_expansion_for_model(Brand::Navico, Some("HALO"));
+        let values = def.values.unwrap();
+        assert_eq!(values.len(), 3); // Off, On, High
+        assert!(values.iter().any(|v| v.label == "High"));
+    }
+
+    #[test]
+    fn test_target_expansion_4g_no_high() {
+        let def = control_target_expansion_for_model(Brand::Navico, Some("4G"));
+        let values = def.values.unwrap();
+        assert_eq!(values.len(), 2); // Off, On only
+        assert!(!values.iter().any(|v| v.label == "High"));
+    }
+
+    #[test]
+    fn test_raymarine_preset_has_coastal() {
+        let def = control_preset_mode_for_model(Brand::Raymarine, None);
+        let values = def.values.unwrap();
+        assert!(values.iter().any(|v| v.value == "coastal"));
+        assert!(!values.iter().any(|v| v.value == "custom")); // Raymarine doesn't have custom
+    }
 }
