@@ -261,10 +261,47 @@ fn build_constraints(model: &ModelInfo) -> Vec<ControlConstraint> {
         // No additional constraint needed - presence in controls indicates availability
     }
 
-    // Dual range constraint: range limited in dual-range mode for Furuno
+    // Dual range constraint: range limited in dual-range mode
+    // When dual-range is active, the secondary screen range is limited to max_dual_range
     if model.has_dual_range && model.max_dual_range > 0 {
-        // Could add constraint that secondary screen range is limited
-        // This would be a "restricted_when" constraint
+        constraints.push(ControlConstraint {
+            control_id: ControlId::Range.to_string(),
+            condition: ConstraintCondition {
+                condition_type: ConstraintType::RestrictedWhen,
+                depends_on: "dualRangeActive".into(), // Virtual control for dual-range state
+                operator: "==".into(),
+                value: "true".into(),
+            },
+            effect: ConstraintEffect {
+                disabled: None,
+                read_only: None,
+                allowed_values: None, // Would need API extension for max_value
+                reason: Some(format!(
+                    "In dual-range mode, range limited to {} meters",
+                    model.max_dual_range
+                )),
+            },
+        });
+    }
+
+    // Scan speed constraint: some speeds only available at certain ranges
+    // Higher RPM is only possible at shorter ranges (less data processing)
+    if model.controls.contains(&ControlId::ScanSpeed) {
+        constraints.push(ControlConstraint {
+            control_id: ControlId::ScanSpeed.to_string(),
+            condition: ConstraintCondition {
+                condition_type: ConstraintType::RestrictedWhen,
+                depends_on: ControlId::Range.to_string(),
+                operator: ">".into(),
+                value: "12000".into(), // 12km / ~6.5 NM threshold
+            },
+            effect: ConstraintEffect {
+                disabled: None,
+                read_only: None,
+                allowed_values: None, // Would list available speeds for this range
+                reason: Some("Higher rotation speeds not available at long ranges".into()),
+            },
+        });
     }
 
     constraints

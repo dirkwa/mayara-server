@@ -2,6 +2,65 @@
 //!
 //! This wrapper implements IoProvider by delegating to an inner provider
 //! while capturing all network traffic for the debug panel.
+//!
+//! # Overview
+//!
+//! `DebugIoProvider<T>` wraps any `IoProvider` implementation and intercepts all
+//! network operations (UDP/TCP send/receive), submitting events to a [`DebugHub`]
+//! for real-time visualization in the debug UI.
+//!
+//! # Usage
+//!
+//! ```rust,ignore
+//! use std::sync::Arc;
+//! use mayara_server::debug::{DebugHub, DebugIoProvider};
+//! use mayara_server::TokioIoProvider;
+//!
+//! // Create a debug hub (shared across all radars)
+//! let hub = Arc::new(DebugHub::new());
+//!
+//! // Create the actual I/O provider
+//! let io = TokioIoProvider::new();
+//!
+//! // Wrap it with debug instrumentation
+//! let debug_io = DebugIoProvider::new(
+//!     io,
+//!     hub.clone(),
+//!     "radar-1".to_string(),
+//!     "furuno".to_string(),
+//! );
+//!
+//! // Use debug_io exactly like you would use the inner provider
+//! // All operations are transparently logged to the hub
+//! ```
+//!
+//! # What Gets Captured
+//!
+//! - **Socket operations**: create, bind, connect, close, multicast join
+//! - **Data transfers**: All UDP/TCP send and receive with decoded protocol info
+//! - **State changes**: Automatic detection of control value changes from responses
+//!
+//! # Protocol Decoding
+//!
+//! Each brand has a protocol decoder that parses raw bytes into structured data:
+//! - Furuno: TCP command/response protocol ($Sxx/$Nxx format)
+//! - Navico: Binary UDP reports and control messages
+//! - Raymarine: Quantum and RD series protocols
+//! - Garmin: xHD and Fantom protocols
+//!
+//! # Integration with Debug UI
+//!
+//! Events submitted to the `DebugHub` can be:
+//! - Streamed via WebSocket to the debug panel
+//! - Filtered by radar ID, brand, or event type
+//! - Used for protocol reverse engineering
+//!
+//! # Performance Notes
+//!
+//! The wrapper adds minimal overhead:
+//! - Event submission is non-blocking (uses internal queue)
+//! - Protocol decoding is done per-packet but typically <1μs
+//! - Memory usage scales with event buffer size (configurable in DebugHub)
 
 use std::collections::HashMap;
 use std::sync::Arc;
