@@ -1,3 +1,9 @@
+/// Check if an interface has carrier (stub - always returns true on Windows)
+pub fn has_carrier(_interface_name: &str) -> bool {
+    // TODO: Implement proper carrier detection on Windows
+    true
+}
+
 pub fn is_wireless_interface(interface_name: &str) -> bool {
     use std::ptr::null_mut;
     use windows::Win32::NetworkManagement::WiFi::{

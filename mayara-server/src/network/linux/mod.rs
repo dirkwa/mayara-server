@@ -1,3 +1,13 @@
+/// Check if an interface has carrier (link is up / cable connected)
+pub fn has_carrier(interface_name: &str) -> bool {
+    // Read from /sys/class/net/<interface>/carrier
+    let path = format!("/sys/class/net/{}/carrier", interface_name);
+    match std::fs::read_to_string(&path) {
+        Ok(content) => content.trim() == "1",
+        Err(_) => false, // If we can't read, assume no carrier
+    }
+}
+
 pub fn is_wireless_interface(interface_name: &str) -> bool {
     use libc::{c_void, ifreq, ioctl, strncpy, Ioctl, AF_INET};
     use std::ffi::CString;
