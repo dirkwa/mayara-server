@@ -20,11 +20,20 @@ pub(crate) mod windows;
 #[cfg(target_os = "macos")]
 pub(crate) use macos::is_wireless_interface;
 
+#[cfg(target_os = "macos")]
+pub(crate) use macos::has_carrier;
+
 #[cfg(target_os = "linux")]
 pub(crate) use linux::is_wireless_interface;
 
+#[cfg(target_os = "linux")]
+pub(crate) use linux::has_carrier;
+
 #[cfg(target_os = "windows")]
 pub(crate) use windows::is_wireless_interface;
+
+#[cfg(target_os = "windows")]
+pub(crate) use windows::has_carrier;
 
 static G_REPLAY: AtomicBool = AtomicBool::new(false);
 
@@ -312,13 +321,35 @@ pub fn find_nic_for_radar(radar_ip: &Ipv4Addr) -> Option<Ipv4Addr> {
     // These are typically used by Navico radars and are reachable from any ethernet interface.
     // Prefer the Furuno/Navico subnet (172.31.x.x) if available, as it's the dedicated radar network.
     if is_link_local(radar_ip) {
-        // Look for the 172.31.x.x interface (Furuno/Navico subnet)
+        // Look for the 172.31.x.x interface (Furuno/Navico subnet) WITH carrier
+        // First pass: only interfaces with carrier
         for itf in &interfaces {
+            if !has_carrier(&itf.name) {
+                log::debug!("Skipping NIC {} (no carrier)", itf.name);
+                continue;
+            }
             for addr in &itf.addr {
                 if let IpAddr::V4(nic_ip) = addr.ip() {
                     if nic_ip.octets()[0] == 172 && nic_ip.octets()[1] == 31 {
                         log::debug!(
-                            "Using Furuno/Navico NIC {} ({}) for link-local radar {}",
+                            "Using Furuno/Navico NIC {} ({}) for link-local radar {} (has carrier)",
+                            itf.name,
+                            nic_ip,
+                            radar_ip
+                        );
+                        return Some(nic_ip);
+                    }
+                }
+            }
+        }
+
+        // Second pass: 172.31.x.x interfaces without carrier (fallback)
+        for itf in &interfaces {
+            for addr in &itf.addr {
+                if let IpAddr::V4(nic_ip) = addr.ip() {
+                    if nic_ip.octets()[0] == 172 && nic_ip.octets()[1] == 31 {
+                        log::warn!(
+                            "Using Furuno/Navico NIC {} ({}) for link-local radar {} (no carrier!)",
                             itf.name,
                             nic_ip,
                             radar_ip
@@ -332,6 +363,9 @@ pub fn find_nic_for_radar(radar_ip: &Ipv4Addr) -> Option<Ipv4Addr> {
         // Link-local fallback: prefer wired ethernet interfaces (name starts with 'en' or 'eth')
         for itf in &interfaces {
             if itf.name.starts_with("en") || itf.name.starts_with("eth") {
+                if !has_carrier(&itf.name) {
+                    continue;
+                }
                 for addr in &itf.addr {
                     if let IpAddr::V4(nic_ip) = addr.ip() {
                         if !nic_ip.is_loopback() {
