@@ -318,7 +318,10 @@ pub fn find_nic_for_radar(radar_ip: &Ipv4Addr) -> Option<Ipv4Addr> {
     }
 
     // Special case: link-local addresses (169.254.x.x)
-    // These are typically used by Navico radars and are reachable from any ethernet interface.
+    // These are typically used by Navico radars and
+    // > are reachable from any ethernet interface.
+    //   KV: Typical AI slop here, this is not true. Any interface can have a link-local address,
+    //   but the radar will only send and receive on the interface it is connected to.
     // Prefer the Furuno/Navico subnet (172.31.x.x) if available, as it's the dedicated radar network.
     if is_link_local(radar_ip) {
         // Look for the 172.31.x.x interface (Furuno/Navico subnet) WITH carrier
