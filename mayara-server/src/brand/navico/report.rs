@@ -1,4 +1,5 @@
 use anyhow::{bail, Error};
+use mayara_core::protocol::furuno::report;
 use std::cmp::min;
 use std::io;
 use std::net::SocketAddr;
@@ -306,73 +307,79 @@ impl NavicoReportReceiver {
                 self.info_request_timeout,
             );
 
-            tokio::select! {
-                _ = subsys.on_shutdown_requested() => {
-                    log::debug!("{}: shutdown", self.key);
-                    return Err(RadarError::Shutdown);
-                },
+            {
+                let info_socket = self.info_socket.as_ref().unwrap();
+                let speed_socket = self.speed_socket.as_ref().unwrap();
+                let report_socket = self.report_socket.as_ref().unwrap();
 
-                _ = sleep_until(timeout) => {
-                    let now = Instant::now();
-                    if self.range_timeout <= now {
-                        self.process_range(0).await?;
-                    }
-                    if self.report_request_timeout <= now {
-                        self.send_report_requests().await?;
-                    }
-                    if self.info_request_timeout <= now {
-                        self.send_info_requests().await?;
-                    }
-                },
+                tokio::select! {
+                    _ = subsys.on_shutdown_requested() => {
+                        log::debug!("{}: shutdown", self.key);
+                        return Err(RadarError::Shutdown);
+                    },
 
-                r = self.report_socket.as_ref().unwrap().recv_buf_from(&mut self.report_buf)  => {
-                    match r {
-                        Ok((_len, _addr)) => {
-                            if let Err(e) = self.process_report().await {
-                                log::error!("{}: {}", self.key, e);
+                    _ = sleep_until(timeout) => {
+                        let now = Instant::now();
+                        if self.range_timeout <= now {
+                            self.process_range(0).await?;
+                        }
+                        if self.report_request_timeout <= now {
+                            self.send_report_requests().await?;
+                        }
+                        if self.info_request_timeout <= now {
+                            self.send_info_requests().await?;
+                        }
+                    },
+
+                    r = report_socket.recv_buf_from(&mut self.report_buf) => {
+                        match r {
+                            Ok((_len, _addr)) => {
+                                if let Err(e) = self.process_report().await {
+                                    log::error!("{}: {}", self.key, e);
+                                }
+                                self.report_buf.clear();
                             }
-                            self.report_buf.clear();
+                            Err(e) => {
+                                log::error!("{}: receive error: {}", self.key, e);
+                                return Err(RadarError::Io(e));
+                            }
                         }
-                        Err(e) => {
-                            log::error!("{}: receive error: {}", self.key, e);
-                            return Err(RadarError::Io(e));
-                        }
-                    }
-                },
+                    },
 
-                r = self.info_socket.as_ref().unwrap().recv_buf_from(&mut self.info_buf),
-                    if self.info_socket.is_some() => {
-                    match r {
-                        Ok((_len, addr)) => {
-                            self.process_info(&addr);
-                            self.info_buf.clear();
+                    r = info_socket.recv_buf_from(&mut self.info_buf)
+                         => {
+                        match r {
+                            Ok((_len, addr)) => {
+                                self.process_info(&addr);
+                                self.info_buf.clear();
+                            }
+                            Err(e) => {
+                                log::error!("{}: receive info error: {}", self.key, e);
+                                return Err(RadarError::Io(e));
+                            }
                         }
-                        Err(e) => {
-                            log::error!("{}: receive info error: {}", self.key, e);
-                            return Err(RadarError::Io(e));
-                        }
-                    }
-                },
+                    },
 
 
-                r = self.speed_socket.as_ref().unwrap().recv_buf_from(&mut self.speed_buf),
-                    if self.speed_socket.is_some() => {
-                    match r {
-                        Ok((_len, addr)) => {
-                            self.process_speed(&addr);
-                            self.speed_buf.clear();
+                    r = speed_socket.recv_buf_from(&mut self.speed_buf)
+                         => {
+                        match r {
+                            Ok((_len, addr)) => {
+                                self.process_speed(&addr);
+                                self.speed_buf.clear();
+                            }
+                            Err(e) => {
+                                log::error!("{}: receive speed error: {}", self.key, e);
+                                return Err(RadarError::Io(e));
+                            }
                         }
-                        Err(e) => {
-                            log::error!("{}: receive speed error: {}", self.key, e);
-                            return Err(RadarError::Io(e));
-                        }
-                    }
-                },
+                    },
 
-                r = self.control_update_rx.recv() => {
-                    match r {
-                        Err(_) => {},
-                        Ok(cv) => {let _ = self.process_control_update(cv).await;},
+                    r = self.control_update_rx.recv() => {
+                        match r {
+                            Err(_) => {},
+                            Ok(cv) => {let _ = self.process_control_update(cv).await;},
+                        }
                     }
                 }
             }
@@ -517,7 +524,8 @@ impl NavicoReportReceiver {
                 controller.set_doppler_speed(&mut self.io, (value as u16) * 16);
             }
             "antennaHeight" => {
-                controller.set_antenna_height(&mut self.io, deci_value as u16);
+                let millimeters = (value * 1000.0) as u16;
+                controller.set_antenna_height(&mut self.io, millimeters);
             }
             "accentLight" => {
                 controller.set_accent_light(&mut self.io, value as u8);
