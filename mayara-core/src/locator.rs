@@ -455,7 +455,7 @@ impl RadarLocator {
                             status: "Listening".to_string(),
                             port: Some(raymarine::BEACON_PORT),
                             multicast: Some(raymarine::BEACON_ADDR.to_string()),
-                            poll: None,
+                            poll: Some(raymarine::poll_beacon_packets),
                             socket: Some(socket),
                             interface: None,
                         }

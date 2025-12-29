@@ -1045,11 +1045,11 @@ pub const MFD_BEACON: [u8; 56] = [
 ];
 
 /// Create the MFD beacon request
-pub fn create_address_request() -> &'static [u8] {
+fn create_address_request() -> &'static [u8] {
     &MFD_BEACON
 }
 
-fn poll_beacon_packets(
+pub fn poll_beacon_packets(
     brand_status: &BrandStatus,
     poll_count: u64,
     io: &mut dyn IoProvider,
@@ -1057,14 +1057,16 @@ fn poll_beacon_packets(
     discoveries: &mut Vec<RadarDiscovery>,
     model_reports: &mut Vec<(String, Option<String>, Option<String>)>,
 ) {
-    // Poll Navico BR24 / Gen3/4/HALO beacons
     if let Some(socket) = brand_status.socket {
         const BEACON_POLL_INTERVAL: u64 = 20;
         if poll_count % BEACON_POLL_INTERVAL == 0 {
             if let (Some(addr), Some(port)) = (brand_status.multicast.as_ref(), brand_status.port) {
                 // Send to multicast address/port
                 if let Err(e) = io.udp_send_to(&socket, create_address_request(), addr, port) {
-                    io.debug(&format!("Navico beacon address request send error: {}", e));
+                    io.debug(&format!(
+                        "Raymarine beacon address request send error: {}",
+                        e
+                    ));
                 }
             }
         }
