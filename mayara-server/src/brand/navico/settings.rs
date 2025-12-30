@@ -251,5 +251,57 @@ pub fn update_when_model_known(controls: &SharedControls, model: Model, radar_in
         ),
     );
 
+    // Guard zone controls - supported on both 4G and HALO
+    // Sensitivity is a read-only value reported by the radar
+    controls.insert(
+        "guardZoneSensitivity",
+        Control::new_numeric("guardZoneSensitivity", 0., 255.).read_only(true),
+    );
+
+    // Guard Zone 1 controls
+    // Enabled is a numeric (0/1) control with has_enabled to indicate enabled/disabled
+    controls.insert(
+        "guardZone1Enabled",
+        Control::new_numeric("guardZone1Enabled", 0., 1.).has_enabled(),
+    );
+    controls.insert(
+        "guardZone1InnerRange",
+        Control::new_numeric("guardZone1InnerRange", 0., max_value).unit("m"),
+    );
+    controls.insert(
+        "guardZone1OuterRange",
+        Control::new_numeric("guardZone1OuterRange", 0., max_value).unit("m"),
+    );
+    controls.insert(
+        "guardZone1Bearing",
+        Control::new_numeric("guardZone1Bearing", -180., 180.).unit("°"),
+    );
+    controls.insert(
+        "guardZone1Width",
+        Control::new_numeric("guardZone1Width", 0., 360.).unit("°"),
+    );
+
+    // Guard Zone 2 controls
+    controls.insert(
+        "guardZone2Enabled",
+        Control::new_numeric("guardZone2Enabled", 0., 1.).has_enabled(),
+    );
+    controls.insert(
+        "guardZone2InnerRange",
+        Control::new_numeric("guardZone2InnerRange", 0., max_value).unit("m"),
+    );
+    controls.insert(
+        "guardZone2OuterRange",
+        Control::new_numeric("guardZone2OuterRange", 0., max_value).unit("m"),
+    );
+    controls.insert(
+        "guardZone2Bearing",
+        Control::new_numeric("guardZone2Bearing", -180., 180.).unit("°"),
+    );
+    controls.insert(
+        "guardZone2Width",
+        Control::new_numeric("guardZone2Width", 0., 360.).unit("°"),
+    );
+
     log::debug!("update_when_model_known: {:?}", controls);
 }

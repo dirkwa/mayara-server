@@ -71,6 +71,7 @@ static CONTROLS_HALO: &[ControlId] = &[
     ControlId::SidelobeSuppression,
     ControlId::BirdMode,
     ControlId::NoTransmitZones,
+    ControlId::GuardZones, // Guard zone alarm configuration
     ControlId::BearingAlignment,
     ControlId::AntennaHeight,
     ControlId::ScanSpeed,
@@ -90,6 +91,7 @@ static CONTROLS_4G: &[ControlId] = &[
     ControlId::SidelobeSuppression,
     ControlId::BearingAlignment,
     ControlId::AntennaHeight,
+    ControlId::GuardZones, // Guard zone alarm configuration
 ];
 
 /// All known Navico radar models

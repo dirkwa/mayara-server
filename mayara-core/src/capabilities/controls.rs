@@ -521,6 +521,161 @@ pub fn control_no_transmit_angle_for_brand(
 }
 
 // =============================================================================
+// Guard Zone Controls
+// =============================================================================
+
+/// Guard zone enabled control
+pub fn control_guard_zone_enabled(zone_number: u8) -> ControlDefinition {
+    ControlDefinition {
+        id: format!("guardZone{}Enabled", zone_number),
+        name: format!("Guard Zone {} Enabled", zone_number),
+        description: format!("Enable or disable guard zone {}.", zone_number),
+        category: ControlCategory::Extended,
+        control_type: ControlType::Boolean,
+        range: None,
+        values: None,
+        properties: None,
+        modes: None,
+        default_mode: None,
+        read_only: false,
+        default: Some(serde_json::json!(false)),
+        wire_hints: None,
+    }
+}
+
+/// Guard zone inner range control (meters)
+pub fn control_guard_zone_inner_range(zone_number: u8) -> ControlDefinition {
+    ControlDefinition {
+        id: format!("guardZone{}InnerRange", zone_number),
+        name: format!("Guard Zone {} Inner Range", zone_number),
+        description: format!(
+            "Inner boundary of guard zone {} in meters.",
+            zone_number
+        ),
+        category: ControlCategory::Extended,
+        control_type: ControlType::Number,
+        range: Some(RangeSpec {
+            min: 0.0,
+            max: 100000.0, // Will be limited by radar's max range
+            step: Some(1.0),
+            unit: Some("m".into()),
+        }),
+        values: None,
+        properties: None,
+        modes: None,
+        default_mode: None,
+        read_only: false,
+        default: Some(serde_json::json!(0)),
+        wire_hints: None,
+    }
+}
+
+/// Guard zone outer range control (meters)
+pub fn control_guard_zone_outer_range(zone_number: u8) -> ControlDefinition {
+    ControlDefinition {
+        id: format!("guardZone{}OuterRange", zone_number),
+        name: format!("Guard Zone {} Outer Range", zone_number),
+        description: format!(
+            "Outer boundary of guard zone {} in meters.",
+            zone_number
+        ),
+        category: ControlCategory::Extended,
+        control_type: ControlType::Number,
+        range: Some(RangeSpec {
+            min: 0.0,
+            max: 100000.0, // Will be limited by radar's max range
+            step: Some(1.0),
+            unit: Some("m".into()),
+        }),
+        values: None,
+        properties: None,
+        modes: None,
+        default_mode: None,
+        read_only: false,
+        default: Some(serde_json::json!(500)),
+        wire_hints: None,
+    }
+}
+
+/// Guard zone bearing control (degrees, center of sector)
+pub fn control_guard_zone_bearing(zone_number: u8) -> ControlDefinition {
+    ControlDefinition {
+        id: format!("guardZone{}Bearing", zone_number),
+        name: format!("Guard Zone {} Bearing", zone_number),
+        description: format!(
+            "Center bearing of guard zone {} in degrees (0-359).",
+            zone_number
+        ),
+        category: ControlCategory::Extended,
+        control_type: ControlType::Number,
+        range: Some(RangeSpec {
+            min: 0.0,
+            max: 359.9,
+            step: Some(0.1),
+            unit: Some("°".into()),
+        }),
+        values: None,
+        properties: None,
+        modes: None,
+        default_mode: None,
+        read_only: false,
+        default: Some(serde_json::json!(0)),
+        wire_hints: None,
+    }
+}
+
+/// Guard zone width control (degrees, arc width)
+pub fn control_guard_zone_width(zone_number: u8) -> ControlDefinition {
+    ControlDefinition {
+        id: format!("guardZone{}Width", zone_number),
+        name: format!("Guard Zone {} Width", zone_number),
+        description: format!(
+            "Arc width of guard zone {} in degrees (0-359.9). Use 359.9 for full circle (ring zone).",
+            zone_number
+        ),
+        category: ControlCategory::Extended,
+        control_type: ControlType::Number,
+        range: Some(RangeSpec {
+            min: 0.0,
+            max: 359.9,
+            step: Some(0.1),
+            unit: Some("°".into()),
+        }),
+        values: None,
+        properties: None,
+        modes: None,
+        default_mode: None,
+        read_only: false,
+        default: Some(serde_json::json!(90.0)),
+        wire_hints: None,
+    }
+}
+
+/// Guard zone sensitivity control (0-255, shared by both zones on Navico)
+pub fn control_guard_zone_sensitivity() -> ControlDefinition {
+    ControlDefinition {
+        id: "guardZoneSensitivity".into(),
+        name: "Guard Zone Sensitivity".into(),
+        description: "Sensitivity threshold for guard zone alerts (0-100%). Higher values trigger on weaker targets.".into(),
+        category: ControlCategory::Extended,
+        control_type: ControlType::Number,
+        range: Some(RangeSpec {
+            min: 0.0,
+            max: 100.0,
+            step: Some(1.0),
+            unit: Some("%".into()),
+        }),
+        values: None,
+        properties: None,
+        modes: None,
+        default_mode: None,
+        read_only: false,
+        default: Some(serde_json::json!(75)),
+        wire_hints: None,
+    }
+}
+
+// =============================================================================
 // Extended Controls (Optional - Model-Specific)
 // =============================================================================
 

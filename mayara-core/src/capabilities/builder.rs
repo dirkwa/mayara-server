@@ -200,6 +200,17 @@ fn build_controls(model: &ModelInfo, has_serial_number: bool) -> Vec<ControlDefi
             {
                 controls.push(def);
             }
+        } else if *control_id == ControlId::GuardZones {
+            // Expand GuardZones into individual controls for both zones
+            // Navico radars support 2 guard zones
+            controls.push(control_guard_zone_sensitivity());
+            for zone in 1..=2 {
+                controls.push(control_guard_zone_enabled(zone));
+                controls.push(control_guard_zone_inner_range(zone));
+                controls.push(control_guard_zone_outer_range(zone));
+                controls.push(control_guard_zone_bearing(zone));
+                controls.push(control_guard_zone_width(zone));
+            }
         } else if *control_id == ControlId::InterferenceRejection
             && model.brand == crate::Brand::Furuno
         {

@@ -460,6 +460,29 @@ impl NavicoReportReceiver {
             0
         }
 
+        fn get_enabled_value(id: &str, controls: &crate::settings::SharedControls) -> bool {
+            if let Some(control) = controls.get(id) {
+                // Check enabled flag first, then fall back to value (1 = enabled)
+                if let Some(enabled) = control.enabled {
+                    return enabled;
+                }
+                // Fall back to value (1.0 = enabled, 0.0 = disabled)
+                if let Some(value) = control.value {
+                    return value != 0.0;
+                }
+            }
+            false
+        }
+
+        fn get_range_value(id: &str, controls: &crate::settings::SharedControls) -> u32 {
+            if let Some(control) = controls.get(id) {
+                if let Some(value) = control.value {
+                    return value as u32;
+                }
+            }
+            0
+        }
+
         let deci_value = (value * 10.0) as i32;
 
         match cv.id.as_str() {
@@ -561,6 +584,66 @@ impl NavicoReportReceiver {
                 let start = get_angle_value("noTransmitStart4", &self.info.controls);
                 let end = mod_deci_degrees(deci_value);
                 controller.set_no_transmit_zone(&mut self.io, 3, start, end, enabled);
+            }
+            // Guard Zone controls
+            // For enabled controls, cv.enabled may be None - use cv.value ("0"/"1") or cv.enabled
+            "guardZone1Enabled" => {
+                // Priority: cv.enabled if set, otherwise parse cv.value as 0/1
+                let gz1_enabled = cv.enabled.unwrap_or_else(|| value != 0.0);
+                let gz2_enabled = get_enabled_value("guardZone2Enabled", &self.info.controls);
+                log::info!(
+                    "{}: Setting guard zone enabled: GZ1={}, GZ2={}",
+                    self.key, gz1_enabled, gz2_enabled
+                );
+                controller.set_guard_zone_enabled(&mut self.io, gz1_enabled, gz2_enabled);
+            }
+            "guardZone2Enabled" => {
+                let gz1_enabled = get_enabled_value("guardZone1Enabled", &self.info.controls);
+                let gz2_enabled = cv.enabled.unwrap_or_else(|| value != 0.0);
+                log::info!(
+                    "{}: Setting guard zone enabled: GZ1={}, GZ2={}",
+                    self.key, gz1_enabled, gz2_enabled
+                );
+                controller.set_guard_zone_enabled(&mut self.io, gz1_enabled, gz2_enabled);
+            }
+            "guardZone1InnerRange" | "guardZone1OuterRange" | "guardZone1Bearing" | "guardZone1Width" => {
+                let inner = get_range_value("guardZone1InnerRange", &self.info.controls);
+                let outer = get_range_value("guardZone1OuterRange", &self.info.controls);
+                let bearing = get_angle_value("guardZone1Bearing", &self.info.controls) as u16;
+                let width = get_angle_value("guardZone1Width", &self.info.controls) as u16;
+                // Apply the new value
+                let (inner, outer, bearing, width) = match cv.id.as_str() {
+                    "guardZone1InnerRange" => (value as u32, outer, bearing, width),
+                    "guardZone1OuterRange" => (inner, value as u32, bearing, width),
+                    "guardZone1Bearing" => (inner, outer, mod_deci_degrees(deci_value) as u16, width),
+                    "guardZone1Width" => (inner, outer, bearing, mod_deci_degrees(deci_value) as u16),
+                    _ => (inner, outer, bearing, width),
+                };
+                log::info!(
+                    "{}: Setting guard zone 1 geometry: inner={}m, outer={}m, bearing={}, width={}",
+                    self.key, inner, outer, bearing, width
+                );
+                controller.set_guard_zone_geometry(&mut self.io, 0, inner, outer, bearing, width);
+            }
+            "guardZone2InnerRange" | "guardZone2OuterRange" | "guardZone2Bearing" | "guardZone2Width" => {
+                let inner = get_range_value("guardZone2InnerRange", &self.info.controls);
+                let outer = get_range_value("guardZone2OuterRange", &self.info.controls);
+                let bearing = get_angle_value("guardZone2Bearing", &self.info.controls) as u16;
+                let width = get_angle_value("guardZone2Width", &self.info.controls) as u16;
+                // Apply the new value
+                let (inner, outer, bearing, width) = match cv.id.as_str() {
+                    "guardZone2InnerRange" => (value as u32, outer, bearing, width),
+                    "guardZone2OuterRange" => (inner, value as u32, bearing, width),
+                    "guardZone2Bearing" => (inner, outer, mod_deci_degrees(deci_value) as u16, width),
+                    "guardZone2Width" => (inner, outer, bearing, mod_deci_degrees(deci_value) as u16),
+                    _ => (inner, outer, bearing, width),
+                };
+                controller.set_guard_zone_geometry(&mut self.io, 1, inner, outer, bearing, width);
+            }
+            "guardZoneSensitivity" => {
+                // Sensitivity is reported in Report02 but there's no direct command for it
+                // For now, log it - the radar may automatically adjust based on zone settings
+                log::debug!("{}: Guard zone sensitivity set to {} (read-only for now)", self.key, value);
             }
             _ => return Err(RadarError::CannotSetControlType(cv.id.clone())),
         }
@@ -924,8 +1007,47 @@ impl NavicoReportReceiver {
 
         self.process_range(range).await?;
 
-        // Log guard zone data (read-only for now - commands not yet implemented)
+        // Update guard zone control values from Report 02 data
         // Zone data is parsed from offsets 54-88 of Report 02
+        self.set_value("guardZoneSensitivity", report.guard_zone_sensitivity as f32);
+
+        // Guard Zone 1
+        self.info.controls.set_value_auto_enabled(
+            "guardZone1Enabled",
+            0.0, // No numeric value for enabled control
+            None,
+            Some(report.guard_zone_1.enabled),
+        )?;
+        self.set_value("guardZone1InnerRange", report.guard_zone_1.inner_range_m as f32);
+        self.set_value("guardZone1OuterRange", report.guard_zone_1.outer_range_m as f32);
+        self.set_value(
+            "guardZone1Bearing",
+            wire_deci_degrees_to_angle_degrees(report.guard_zone_1.bearing_decideg),
+        );
+        self.set_value(
+            "guardZone1Width",
+            wire_deci_degrees_to_angle_degrees(report.guard_zone_1.width_decideg),
+        );
+
+        // Guard Zone 2
+        self.info.controls.set_value_auto_enabled(
+            "guardZone2Enabled",
+            0.0, // No numeric value for enabled control
+            None,
+            Some(report.guard_zone_2.enabled),
+        )?;
+        self.set_value("guardZone2InnerRange", report.guard_zone_2.inner_range_m as f32);
+        self.set_value("guardZone2OuterRange", report.guard_zone_2.outer_range_m as f32);
+        self.set_value(
+            "guardZone2Bearing",
+            wire_deci_degrees_to_angle_degrees(report.guard_zone_2.bearing_decideg),
+        );
+        self.set_value(
+            "guardZone2Width",
+            wire_deci_degrees_to_angle_degrees(report.guard_zone_2.width_decideg),
+        );
+
+        // Debug logging when guard zones are active
         if report.guard_zone_1.enabled || report.guard_zone_2.enabled {
             log::debug!(
                 "{}: Guard zones - sensitivity: {}, zone1: {} ({}m-{}m, bearing:{} width:{}), zone2: {} ({}m-{}m, bearing:{} width:{})",

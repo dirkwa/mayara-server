@@ -308,19 +308,15 @@ immediately. This is expected since the radar has no power to transmit anything.
 | 55 | 1 | Guard zone 1 enabled (0=off, 1=on) |
 | 56 | 1 | Guard zone 2 enabled (0=off, 1=on) |
 | 57 | 4 | Unknown (zeros) |
-| 61 | 1 | Guard zone 1 inner range (meters) |
-| 62 | 3 | Unknown (zeros) |
-| 65 | 1 | Guard zone 1 outer range (meters) |
-| 66 | 3 | Unknown (zeros) |
-| 69 | 2 | Guard zone 1 bearing (deci-degrees, u16 LE) |
-| 71 | 2 | Guard zone 1 width (deci-degrees, u16 LE) |
+| 61 | 4 | Guard zone 1 inner range (u32 LE, meters) |
+| 65 | 4 | Guard zone 1 outer range (u32 LE, meters) |
+| 69 | 2 | Guard zone 1 bearing (u16 LE, deci-degrees) |
+| 71 | 2 | Guard zone 1 width (u16 LE, deci-degrees) |
 | 73 | 4 | Unknown (zeros) |
-| 77 | 1 | Guard zone 2 inner range (meters) |
-| 78 | 3 | Unknown (zeros) |
-| 81 | 1 | Guard zone 2 outer range (meters) |
-| 82 | 3 | Unknown (zeros) |
-| 85 | 2 | Guard zone 2 bearing (deci-degrees, u16 LE) |
-| 87 | 2 | Guard zone 2 width (deci-degrees, u16 LE) |
+| 77 | 4 | Guard zone 2 inner range (u32 LE, meters) |
+| 81 | 4 | Guard zone 2 outer range (u32 LE, meters) |
+| 85 | 2 | Guard zone 2 bearing (u16 LE, deci-degrees) |
+| 87 | 2 | Guard zone 2 width (u16 LE, deci-degrees) |
 | 89 | 10 | Unknown |
 
 **Verified values (4G radar):**
@@ -370,9 +366,15 @@ Guard zones (offsets 54-88):
 - **Shape**: Determined by width field
   - Sector: width < 3600 (e.g., 68.3° = 683)
   - Cycle (full circle): width = 3599 (359.9°)
-- **Range**: Inner/outer in meters (e.g., 18m inner, 33m outer)
+- **Range**: Inner/outer as u32 LE in meters (supports full radar range, e.g., 277m inner, 670m outer)
 - **Bearing**: Center angle in deci-degrees (e.g., 50° = 500)
 - **Alarm mode** (enter/exit): NOT transmitted - chartplotter-internal logic
+
+**Verified guard zone example (4G radar, Range B):**
+- Zone 1 enabled: `01` at offset 55
+- Inner range 277m: `15 01 00 00` at offset 61 (u32 LE = 0x00000115 = 277)
+- Outer range 670m: `9E 02 00 00` at offset 65 (u32 LE = 0x0000029E = 670)
+- Width 45°: `C2 01` at offset 71 (u16 LE = 0x01C2 = 450 deci-degrees)
 
 **Chartplotter-Internal Features (NOT in protocol):**
 The following radar display features are computed/stored locally by the chartplotter
@@ -718,6 +720,37 @@ C0 C1 SS 00 00 00 EE ST ST EN EN
 - EE = Enabled
 - ST ST = Start angle (deci-degrees, little-endian i16)
 - EN EN = End angle (deci-degrees, little-endian i16)
+
+### Guard Zones (0x90 C1)
+
+Enable/disable guard zones:
+```
+90 C1 01 ZZ GZ1_EN GZ2_EN
+```
+- ZZ = Zone selector (00 observed)
+- GZ1_EN = Guard zone 1 enabled (0=off, 1=on)
+- GZ2_EN = Guard zone 2 enabled (0=off, 1=on)
+
+Set guard zone geometry:
+```
+90 C1 02 ZZ 00 00 II II II II OO OO OO OO BB BB WW WW
+```
+- ZZ = Zone index (0 = guard zone 1, 1 = guard zone 2)
+- II II II II = Inner range (u32 LE, meters)
+- OO OO OO OO = Outer range (u32 LE, meters)
+- BB BB = Bearing (u16 LE, deci-degrees, center of sector)
+- WW WW = Width (u16 LE, deci-degrees, 3599 = full circle)
+
+**Note:** Guard zone sensitivity (0-255, shared by both zones) is read from Report 02
+offset 54, but the SET command for sensitivity was not captured. It may use a separate
+command or be set via the enable command.
+
+**4G Compatibility Note:** Testing with a 4G radar showed that while guard zone state
+is correctly reported in Report 02, the guard zone commands (0x90 0xC1) sent from
+third-party software may not be accepted by the radar. Guard zones configured via
+the MFD are correctly reflected in Report 02. The MFD may use a different communication
+mechanism (possibly unicast or a negotiated session) for guard zone configuration.
+Further investigation is needed.
 
 ### Local Interference Rejection (0x0E C1)
 

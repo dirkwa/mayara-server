@@ -119,6 +119,8 @@ pub enum ControlId {
     AntennaHeight,
     /// No-transmit/blanking zones configuration
     NoTransmitZones,
+    /// Guard zone configuration (alarm zones)
+    GuardZones,
 }
 
 /// Optional features a radar provider may implement.

@@ -558,6 +558,64 @@ impl NavicoController {
         ));
     }
 
+    /// Set guard zone enabled state for both zones
+    ///
+    /// Command format: 90 C1 01 ZZ GZ1_EN GZ2_EN
+    /// - ZZ = zone selector (00)
+    /// - GZ1_EN = guard zone 1 enabled (0 or 1)
+    /// - GZ2_EN = guard zone 2 enabled (0 or 1)
+    pub fn set_guard_zone_enabled<I: IoProvider>(
+        &mut self,
+        io: &mut I,
+        gz1_enabled: bool,
+        gz2_enabled: bool,
+    ) {
+        let cmd = [
+            0x90, 0xC1, 0x01, 0x00,
+            if gz1_enabled { 0x01 } else { 0x00 },
+            if gz2_enabled { 0x01 } else { 0x00 },
+        ];
+        self.send_command(io, &cmd);
+        io.debug(&format!(
+            "[{}] Set guard zones enabled: GZ1={}, GZ2={}",
+            self.radar_id, gz1_enabled, gz2_enabled
+        ));
+    }
+
+    /// Set guard zone geometry
+    ///
+    /// Command format: 90 C1 02 ZZ 00 00 II II II II OO OO OO OO BB BB WW WW
+    /// - ZZ = zone index (0 = GZ1, 1 = GZ2)
+    /// - II = inner range (u32 LE, meters)
+    /// - OO = outer range (u32 LE, meters)
+    /// - BB = bearing (u16 LE, deci-degrees, center of sector)
+    /// - WW = width (u16 LE, deci-degrees, 3599 = full circle)
+    pub fn set_guard_zone_geometry<I: IoProvider>(
+        &mut self,
+        io: &mut I,
+        zone: u8,
+        inner_range_m: u32,
+        outer_range_m: u32,
+        bearing_decideg: u16,
+        width_decideg: u16,
+    ) {
+        let mut cmd = vec![0x90, 0xC1, 0x02, zone, 0x00, 0x00];
+        cmd.extend_from_slice(&inner_range_m.to_le_bytes());
+        cmd.extend_from_slice(&outer_range_m.to_le_bytes());
+        cmd.extend_from_slice(&bearing_decideg.to_le_bytes());
+        cmd.extend_from_slice(&width_decideg.to_le_bytes());
+        self.send_command(io, &cmd);
+        io.debug(&format!(
+            "[{}] Set guard zone {} geometry: {}m-{}m, bearing={}°, width={}°",
+            self.radar_id,
+            zone + 1,
+            inner_range_m,
+            outer_range_m,
+            bearing_decideg as f32 / 10.0,
+            width_decideg as f32 / 10.0
+        ));
+    }
+
     /// Send report requests to the radar
     pub fn send_report_requests<I: IoProvider>(&mut self, io: &mut I) {
         self.send_command(io, &navico::REQUEST_03_REPORT);
