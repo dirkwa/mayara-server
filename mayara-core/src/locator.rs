@@ -4,6 +4,7 @@
 //! Works on both native (tokio) and WASM (FFI) platforms via the IoProvider trait.
 
 use std::collections::BTreeMap;
+use std::net::Ipv4Addr;
 
 use crate::io::{IoProvider, UdpSocketHandle};
 use crate::protocol::{furuno, garmin, navico, raymarine};
@@ -135,7 +136,7 @@ pub struct RadarLocator {
     brand_limitation: Option<Brand>,
 
     /// Optional interface IP for Furuno broadcasts (to prevent cross-NIC traffic)
-    furuno_interface: Option<String>,
+    furuno_interface: Option<Ipv4Addr>,
 
     /// Current startup phase for staggered initialization
     startup_phase: StartupPhase,
@@ -143,7 +144,7 @@ pub struct RadarLocator {
     /// List of interface IP addresses to join multicast on
     /// If empty, uses UNSPECIFIED (OS default). For multi-NIC setups,
     /// populate this with all NIC IPs to ensure multicast works on all interfaces.
-    multicast_interfaces: Vec<String>,
+    multicast_interfaces: Vec<Ipv4Addr>,
 
     /// Current locator state (active, quiesced, idle)
     state: LocatorState,
@@ -168,8 +169,8 @@ impl RadarLocator {
     ///
     /// This is critical for multi-NIC setups to prevent broadcast packets
     /// from going out on the wrong interface (e.g., 192.168.0.x instead of 172.31.x.x).
-    pub fn set_furuno_interface(&mut self, interface: &str) {
-        self.furuno_interface = Some(interface.to_string());
+    pub fn set_furuno_interface(&mut self, interface: Ipv4Addr) {
+        self.furuno_interface = Some(interface);
     }
 
     /// Set the list of interface IPs to join multicast groups on.
@@ -180,16 +181,20 @@ impl RadarLocator {
     ///
     /// # Example
     /// ```rust,ignore
-    /// locator.set_multicast_interfaces(&["192.168.0.106", "172.31.3.119"]);
+    /// use std::net::Ipv4Addr;
+    /// locator.set_multicast_interfaces(&[
+    ///     Ipv4Addr::new(192, 168, 0, 106),
+    ///     Ipv4Addr::new(172, 31, 3, 119),
+    /// ]);
     /// ```
-    pub fn set_multicast_interfaces(&mut self, interfaces: &[&str]) {
-        self.multicast_interfaces = interfaces.iter().map(|s| s.to_string()).collect();
+    pub fn set_multicast_interfaces(&mut self, interfaces: &[Ipv4Addr]) {
+        self.multicast_interfaces = interfaces.to_vec();
     }
 
     /// Add a single interface to the multicast interface list.
-    pub fn add_multicast_interface(&mut self, interface: &str) {
-        if !self.multicast_interfaces.contains(&interface.to_string()) {
-            self.multicast_interfaces.push(interface.to_string());
+    pub fn add_multicast_interface(&mut self, interface: Ipv4Addr) {
+        if !self.multicast_interfaces.contains(&interface) {
+            self.multicast_interfaces.push(interface);
         }
     }
 
@@ -288,7 +293,7 @@ impl RadarLocator {
                 if io.udp_bind(&socket, furuno::BEACON_PORT).is_ok() {
                     // CRITICAL: Bind to specific interface if configured
                     // This prevents broadcast packets from going out on wrong NIC in multi-NIC setups
-                    if let Some(ref interface) = self.furuno_interface {
+                    if let Some(interface) = self.furuno_interface {
                         if let Err(e) = io.udp_bind_interface(&socket, interface) {
                             io.debug(&format!(
                                 "Warning: Failed to bind Furuno socket to interface {}: {}",
@@ -313,7 +318,7 @@ impl RadarLocator {
                         multicast: None, // Furuno uses broadcast, not multicast
                         poll: Some(furuno::poll_beacon_packets),
                         socket: Some(socket),
-                        interface: self.furuno_interface.clone(),
+                        interface: self.furuno_interface.map(|ip| ip.to_string()),
                     }
                 } else {
                     io.debug("Failed to bind Furuno beacon socket");
@@ -335,15 +340,15 @@ impl RadarLocator {
         &self,
         io: &mut I,
         socket: &UdpSocketHandle,
-        group: &str,
+        group: Ipv4Addr,
     ) -> bool {
         if self.multicast_interfaces.is_empty() {
             // No specific interfaces configured - use OS default
-            io.udp_join_multicast(socket, group, "").is_ok()
+            io.udp_join_multicast(socket, group, Ipv4Addr::UNSPECIFIED).is_ok()
         } else {
             // Join on each configured interface
             let mut any_success = false;
-            for interface in &self.multicast_interfaces {
+            for &interface in &self.multicast_interfaces {
                 match io.udp_join_multicast(socket, group, interface) {
                     Ok(()) => {
                         io.debug(&format!(
@@ -578,17 +583,14 @@ impl RadarLocator {
         model: Option<&str>,
         serial: Option<&str>,
     ) -> Option<RadarDiscovery> {
-        let source_ip = source_addr.split(':').next().unwrap_or(source_addr);
+        // Parse source IP from "ip:port" string format
+        let source_ip_str = source_addr.split(':').next().unwrap_or(source_addr);
+        let source_ip: Option<Ipv4Addr> = source_ip_str.parse().ok();
 
         for (_id, radar) in self.radars.iter_mut() {
-            let radar_ip = radar
-                .discovery
-                .address
-                .split(':')
-                .next()
-                .unwrap_or(&radar.discovery.address);
+            let radar_ip = *radar.discovery.address.ip();
 
-            if radar_ip == source_ip {
+            if source_ip == Some(radar_ip) {
                 let mut changed = false;
 
                 if let Some(m) = model {

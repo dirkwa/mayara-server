@@ -53,7 +53,7 @@ pub struct FurunoReportReceiver {
 impl FurunoReportReceiver {
     pub fn new(session: Session, info: RadarInfo) -> FurunoReportReceiver {
         let key = info.key();
-        let radar_addr = info.addr.ip().to_string();
+        let radar_addr = *info.addr.ip();
 
         // Get SharedRadars from session - needed to update radar info when model is detected
         let radars = session
@@ -64,7 +64,7 @@ impl FurunoReportReceiver {
             .expect("SharedRadars must be initialized before creating report receiver");
 
         // Create the unified controller from mayara-core
-        let controller = FurunoController::new(&key, &radar_addr);
+        let controller = FurunoController::new(&key, radar_addr);
 
         // Create I/O provider - wrapped with DebugIoProvider when dev feature enabled
         #[cfg(feature = "dev")]

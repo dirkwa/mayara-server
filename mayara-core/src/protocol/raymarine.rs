@@ -43,7 +43,9 @@ pub const HD_PIXEL_VALUES_RAW: u16 = 256;
 pub const HD_PIXEL_VALUES: u8 = 128;
 
 /// Beacon multicast address for classic Raymarine
-pub const BEACON_ADDR: &str = "224.0.0.1";
+use std::net::{Ipv4Addr, SocketAddrV4};
+
+pub const BEACON_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 1);
 pub const BEACON_PORT: u16 = 5800;
 
 /// Quantum WiFi multicast address
@@ -286,18 +288,14 @@ impl LittleEndianSocketAddrV4 {
         le_val.to_be_bytes()
     }
 
-    /// Get IP address as string
-    ///
-    /// Raymarine stores IP addresses as little-endian u32, so we need
-    /// to interpret them correctly.
-    pub fn ip_string(&self) -> String {
-        // Read as little-endian u32, then extract octets
+    /// Get IP address as Ipv4Addr
+    pub fn to_ipv4(&self) -> Ipv4Addr {
         let ip_val = u32::from_le_bytes(self.addr);
-        let a = (ip_val >> 24) & 0xff;
-        let b = (ip_val >> 16) & 0xff;
-        let c = (ip_val >> 8) & 0xff;
-        let d = ip_val & 0xff;
-        format!("{}.{}.{}.{}", a, b, c, d)
+        let a = ((ip_val >> 24) & 0xff) as u8;
+        let b = ((ip_val >> 16) & 0xff) as u8;
+        let c = ((ip_val >> 8) & 0xff) as u8;
+        let d = (ip_val & 0xff) as u8;
+        Ipv4Addr::new(a, b, c, d)
     }
 
     /// Get port number
@@ -305,9 +303,14 @@ impl LittleEndianSocketAddrV4 {
         u16::from_le_bytes(self.port)
     }
 
+    /// Get as SocketAddrV4
+    pub fn to_socket_addr(&self) -> SocketAddrV4 {
+        SocketAddrV4::new(self.to_ipv4(), self.port())
+    }
+
     /// Get as "ip:port" string
     pub fn as_string(&self) -> String {
-        format!("{}:{}", self.ip_string(), self.port())
+        format!("{}:{}", self.to_ipv4(), self.port())
     }
 }
 
@@ -375,8 +378,8 @@ pub struct ParsedBeacon36 {
     pub beacon_type: u32,
     pub link_id: LinkId,
     pub subtype: u32,
-    pub report_addr: String,
-    pub command_addr: String,
+    pub report_addr: SocketAddrV4,
+    pub command_addr: SocketAddrV4,
 }
 
 /// Combined beacon result for radar discovery
@@ -385,8 +388,8 @@ pub struct ParsedRadarBeacon {
     pub link_id: LinkId,
     pub model_name: Option<String>,
     pub base_model: BaseModel,
-    pub report_addr: String,
-    pub command_addr: String,
+    pub report_addr: SocketAddrV4,
+    pub command_addr: SocketAddrV4,
 }
 
 // =============================================================================
@@ -511,8 +514,8 @@ pub fn parse_beacon_36(data: &[u8]) -> Result<ParsedBeacon36, ParseError> {
         beacon_type,
         link_id,
         subtype,
-        report_addr: beacon.report.as_string(),
-        command_addr: beacon.command.as_string(),
+        report_addr: beacon.report.to_socket_addr(),
+        command_addr: beacon.command.to_socket_addr(),
     })
 }
 
@@ -523,7 +526,7 @@ pub fn parse_beacon_36(data: &[u8]) -> Result<ParsedBeacon36, ParseError> {
 /// 2. Then, a 36-byte beacon provides endpoints (same link_id)
 ///
 /// This function handles either beacon type.
-pub fn parse_beacon_response(data: &[u8], source_addr: &str) -> Result<RadarDiscovery, ParseError> {
+pub fn parse_beacon_response(data: &[u8], source_addr: SocketAddrV4) -> Result<RadarDiscovery, ParseError> {
     if data.len() < 36 {
         return Err(ParseError::TooShort {
             expected: 36,
@@ -548,9 +551,7 @@ pub fn parse_beacon_response(data: &[u8], source_addr: &str) -> Result<RadarDisc
             brand: Brand::Raymarine,
             model: beacon.model_name,
             name: format!("{:08X}", beacon.link_id),
-            address: source_addr.to_string(),
-            data_port: 0, // Will come from 36-byte beacon
-            command_port: 0,
+            address: source_addr,
             spokes_per_revolution: spokes,
             max_spoke_len: spoke_len,
             pixel_values: pixels,
@@ -582,37 +583,20 @@ pub fn parse_beacon_response(data: &[u8], source_addr: &str) -> Result<RadarDisc
             BaseModel::RD => (RD_SPOKES_PER_REVOLUTION, RD_SPOKE_LEN, NON_HD_PIXEL_VALUES),
         };
 
-        // Parse port from report address
-        let data_port = beacon
-            .report_addr
-            .rsplit(':')
-            .next()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-
-        let command_port = beacon
-            .command_addr
-            .rsplit(':')
-            .next()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-
         return Ok(RadarDiscovery {
             brand: Brand::Raymarine,
             model: None,
             name: format!("{:08X}", beacon.link_id),
-            address: source_addr.to_string(),
-            data_port,
-            command_port,
+            address: source_addr,
             spokes_per_revolution: spokes,
             max_spoke_len: spoke_len,
             pixel_values: pixels,
             serial_number: None,
             nic_address: None, // Set by locator
             suffix: None,
-            data_address: None,
-            report_address: None,
-            send_address: None,
+            data_address: Some(beacon.report_addr),
+            report_address: Some(beacon.report_addr),
+            send_address: Some(beacon.command_addr),
         });
     }
 
@@ -1055,27 +1039,30 @@ pub fn poll_beacon_packets(
     io: &mut dyn IoProvider,
     buf: &mut [u8],
     discoveries: &mut Vec<RadarDiscovery>,
-    model_reports: &mut Vec<(String, Option<String>, Option<String>)>,
+    _model_reports: &mut Vec<(String, Option<String>, Option<String>)>,
 ) {
     if let Some(socket) = brand_status.socket {
         const BEACON_POLL_INTERVAL: u64 = 20;
         if poll_count % BEACON_POLL_INTERVAL == 0 {
-            if let (Some(addr), Some(port)) = (brand_status.multicast.as_ref(), brand_status.port) {
-                // Send to multicast address/port
-                if let Err(e) = io.udp_send_to(&socket, create_address_request(), addr, port) {
-                    io.debug(&format!(
-                        "Raymarine beacon address request send error: {}",
-                        e
-                    ));
+            if let (Some(addr_str), Some(port)) = (brand_status.multicast.as_ref(), brand_status.port) {
+                // Parse multicast address and send
+                if let Ok(addr) = addr_str.parse::<Ipv4Addr>() {
+                    let dest = SocketAddrV4::new(addr, port);
+                    if let Err(e) = io.udp_send_to(&socket, create_address_request(), dest) {
+                        io.debug(&format!(
+                            "Raymarine beacon address request send error: {}",
+                            e
+                        ));
+                    }
                 }
             }
         }
-        while let Some((len, addr, _port)) = io.udp_recv_from(&socket, buf) {
+        while let Some((len, addr)) = io.udp_recv_from(&socket, buf) {
             let data = &buf[..len];
             if !is_beacon_36(data) && !is_beacon_56(data) {
                 continue;
             }
-            match parse_beacon_response(data, &addr) {
+            match parse_beacon_response(data, addr) {
                 Ok(discovery) => {
                     io.debug(&format!(
                         "Raymarine beacon from {}: {:?}",
@@ -1155,9 +1142,9 @@ mod tests {
         assert_eq!(beacon.link_id, 0xd6806b58);
         assert_eq!(beacon.subtype, SUBTYPE_QUANTUM_36);
         // Report address: 232.1.243.1:2574 (0xe, 0xa = 2574)
-        assert!(beacon.report_addr.starts_with("232.1.243.1:"));
+        assert_eq!(*beacon.report_addr.ip(), std::net::Ipv4Addr::new(232, 1, 243, 1));
         // Command address: 198.18.6.214:2575
-        assert!(beacon.command_addr.starts_with("198.18.6.214:"));
+        assert_eq!(*beacon.command_addr.ip(), std::net::Ipv4Addr::new(198, 18, 6, 214));
     }
 
     #[test]

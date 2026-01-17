@@ -19,6 +19,8 @@
 //! | 4G | 48 NM | No | Gen4 |
 //! | HALO | 96 NM | Yes | Advanced |
 
+use std::net::{Ipv4Addr, SocketAddrV4};
+
 use crate::io::{IoProvider, UdpSocketHandle};
 use crate::protocol::navico;
 
@@ -64,13 +66,12 @@ pub enum NavicoControllerState {
 pub struct NavicoController {
     /// Radar ID (for logging)
     radar_id: String,
-    /// Radar addresses from beacon
-    command_addr: String,
-    command_port: u16,
-    report_addr: String,
-    report_port: u16,
+    /// Command address (IP + port)
+    command_addr: SocketAddrV4,
+    /// Report multicast address (IP + port)
+    report_addr: SocketAddrV4,
     /// NIC address to bind to (ensures packets go out correct interface)
-    nic_addr: String,
+    nic_addr: Ipv4Addr,
     /// Command socket
     command_socket: Option<UdpSocketHandle>,
     /// Report socket
@@ -96,20 +97,16 @@ impl NavicoController {
     /// Create a new Navico controller
     pub fn new(
         radar_id: &str,
-        command_addr: &str,
-        command_port: u16,
-        report_addr: &str,
-        report_port: u16,
-        nic_addr: &str,
+        command_addr: SocketAddrV4,
+        report_addr: SocketAddrV4,
+        nic_addr: Ipv4Addr,
         model: NavicoModel,
     ) -> Self {
         Self {
             radar_id: radar_id.to_string(),
-            command_addr: command_addr.to_string(),
-            command_port,
-            report_addr: report_addr.to_string(),
-            report_port,
-            nic_addr: nic_addr.to_string(),
+            command_addr,
+            report_addr,
+            nic_addr,
             command_socket: None,
             report_socket: None,
             state: NavicoControllerState::Disconnected,
@@ -160,11 +157,11 @@ impl NavicoController {
         match io.udp_create() {
             Ok(socket) => {
                 // Bind to NIC address to ensure packets go out the correct interface
-                if io.udp_bind_interface(&socket, &self.nic_addr).is_ok() {
+                if io.udp_bind_interface(&socket, self.nic_addr).is_ok() {
                     self.command_socket = Some(socket);
                     io.debug(&format!(
-                        "[{}] Command socket created for {}:{} via {}",
-                        self.radar_id, self.command_addr, self.command_port, self.nic_addr
+                        "[{}] Command socket created for {} via {}",
+                        self.radar_id, self.command_addr, self.nic_addr
                     ));
                 } else {
                     io.debug(&format!(
@@ -175,8 +172,8 @@ impl NavicoController {
                     if io.udp_bind(&socket, 0).is_ok() {
                         self.command_socket = Some(socket);
                         io.debug(&format!(
-                            "[{}] Command socket created for {}:{} (fallback)",
-                            self.radar_id, self.command_addr, self.command_port
+                            "[{}] Command socket created for {} (fallback)",
+                            self.radar_id, self.command_addr
                         ));
                     } else {
                         io.udp_close(socket);
@@ -194,15 +191,15 @@ impl NavicoController {
         // Create report socket
         match io.udp_create() {
             Ok(socket) => {
-                if io.udp_bind(&socket, self.report_port).is_ok() {
+                if io.udp_bind(&socket, self.report_addr.port()).is_ok() {
                     if io
-                        .udp_join_multicast(&socket, &self.report_addr, "")
+                        .udp_join_multicast(&socket, *self.report_addr.ip(), Ipv4Addr::UNSPECIFIED)
                         .is_ok()
                     {
                         self.report_socket = Some(socket);
                         io.debug(&format!(
-                            "[{}] Joined report multicast {}:{}",
-                            self.radar_id, self.report_addr, self.report_port
+                            "[{}] Joined report multicast {}",
+                            self.radar_id, self.report_addr
                         ));
                         self.state = NavicoControllerState::Listening;
                     } else {
@@ -232,7 +229,7 @@ impl NavicoController {
         // Process incoming reports
         if let Some(socket) = self.report_socket {
             let mut buf = [0u8; 2048];
-            while let Some((len, _addr, _port)) = io.udp_recv_from(&socket, &mut buf) {
+            while let Some((len, _addr)) = io.udp_recv_from(&socket, &mut buf) {
                 self.process_report(io, &buf[..len]);
                 activity = true;
                 if self.state == NavicoControllerState::Listening {
@@ -290,7 +287,7 @@ impl NavicoController {
 
     fn send_command<I: IoProvider>(&self, io: &mut I, data: &[u8]) {
         if let Some(socket) = self.command_socket {
-            if let Err(e) = io.udp_send_to(&socket, data, &self.command_addr, self.command_port) {
+            if let Err(e) = io.udp_send_to(&socket, data, self.command_addr) {
                 io.debug(&format!(
                     "[{}] Failed to send command: {}",
                     self.radar_id, e

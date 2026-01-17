@@ -23,16 +23,6 @@ use mayara_core::protocol::navico::{
 const NAVICO_SPOKES: usize = NAVICO_SPOKES_U16 as usize;
 const NAVICO_SPOKE_LEN: usize = NAVICO_SPOKE_LEN_U16 as usize;
 
-/// Parse a socket address string "ip:port" into SocketAddrV4
-fn parse_socket_addr(s: &str) -> Option<SocketAddrV4> {
-    let colon_pos = s.rfind(':')?;
-    let ip_str = &s[..colon_pos];
-    let port_str = &s[colon_pos + 1..];
-    let ip: Ipv4Addr = ip_str.parse().ok()?;
-    let port: u16 = port_str.parse().ok()?;
-    Some(SocketAddrV4::new(ip, port))
-}
-
 // Spoke numbers go from [0..4096>, but only half of them are used.
 // The actual image is 2048 x 1024 x 4 bits
 const NAVICO_BITS_PER_PIXEL: usize = BITS_PER_NIBBLE;
@@ -346,7 +336,7 @@ const BLANKING_SETS: [(usize, &str, &str); 4] = [
 // New unified discovery processing (used by CoreLocatorAdapter)
 // =============================================================================
 
-use mayara_core::radar::{ParsedAddress, RadarDiscovery};
+use mayara_core::radar::RadarDiscovery;
 
 /// Process a radar discovery from the core locator.
 ///
@@ -360,32 +350,22 @@ pub fn process_discovery(
     radars: &SharedRadars,
     subsys: &SubsystemHandle,
 ) -> Result<(), io::Error> {
-    // Parse radar's main address
-    let parsed = ParsedAddress::parse(&discovery.address)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let radar_ip = Ipv4Addr::from(parsed.ip);
-    let radar_addr = SocketAddrV4::new(radar_ip, parsed.port);
+    // Get radar's main address (now typed as SocketAddrV4)
+    let radar_ip = *discovery.address.ip();
+    let radar_addr = discovery.address;
 
-    // Use the full addresses from beacon if available, otherwise fall back to port-based
-    let data_addr: SocketAddrV4 = if let Some(addr) = &discovery.data_address {
-        parse_socket_addr(addr).unwrap_or_else(|| SocketAddrV4::new(radar_ip, discovery.data_port))
-    } else {
-        SocketAddrV4::new(radar_ip, discovery.data_port)
-    };
+    // Use the full addresses from beacon if available
+    let data_addr: SocketAddrV4 = discovery
+        .data_address
+        .unwrap_or_else(|| SocketAddrV4::new(radar_ip, discovery.address.port()));
 
-    let report_addr: SocketAddrV4 = if let Some(addr) = &discovery.report_address {
-        parse_socket_addr(addr)
-            .unwrap_or_else(|| SocketAddrV4::new(radar_ip, discovery.command_port))
-    } else {
-        SocketAddrV4::new(radar_ip, discovery.command_port)
-    };
+    let report_addr: SocketAddrV4 = discovery
+        .report_address
+        .unwrap_or_else(|| SocketAddrV4::new(radar_ip, discovery.address.port()));
 
-    let send_addr: SocketAddrV4 = if let Some(addr) = &discovery.send_address {
-        parse_socket_addr(addr)
-            .unwrap_or_else(|| SocketAddrV4::new(radar_ip, discovery.command_port))
-    } else {
-        SocketAddrV4::new(radar_ip, discovery.command_port)
-    };
+    let send_addr: SocketAddrV4 = discovery
+        .send_address
+        .unwrap_or_else(|| SocketAddrV4::new(radar_ip, discovery.address.port()));
 
     // Determine locator ID and model
     let is_br24 = discovery.model.as_deref() == Some("BR24");

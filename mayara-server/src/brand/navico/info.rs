@@ -17,15 +17,15 @@ use crate::radar::{RadarError, RadarInfo};
 
 // Socket addresses constructed from core constants
 fn info_socket_addr() -> SocketAddrV4 {
-    SocketAddrV4::new(INFO_ADDR.parse().unwrap(), INFO_PORT)
+    SocketAddrV4::new(INFO_ADDR, INFO_PORT)
 }
 
 fn speed_a_socket_addr() -> SocketAddrV4 {
-    SocketAddrV4::new(SPEED_ADDR_A.parse().unwrap(), SPEED_PORT_A)
+    SocketAddrV4::new(SPEED_ADDR_A, SPEED_PORT_A)
 }
 
 fn speed_b_socket_addr() -> SocketAddrV4 {
-    SocketAddrV4::new(SPEED_ADDR_B.parse().unwrap(), SPEED_PORT_B)
+    SocketAddrV4::new(SPEED_ADDR_B, SPEED_PORT_B)
 }
 
 // Socket index for the socket array

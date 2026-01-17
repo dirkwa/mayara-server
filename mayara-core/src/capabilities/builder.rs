@@ -314,13 +314,12 @@ mod tests {
 
     #[test]
     fn test_build_capabilities_furuno() {
+        use std::net::{Ipv4Addr, SocketAddrV4};
         let discovery = RadarDiscovery {
             brand: Brand::Furuno,
             model: Some("DRS4D-NXT".into()),
             name: "Test Radar".into(),
-            address: "192.168.1.100:10010".into(),
-            data_port: 10024,
-            command_port: 10025,
+            address: SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 100), 10010),
             spokes_per_revolution: 2048,
             max_spoke_len: 512,
             pixel_values: 64,
@@ -345,13 +344,12 @@ mod tests {
 
     #[test]
     fn test_build_capabilities_with_features() {
+        use std::net::{Ipv4Addr, SocketAddrV4};
         let discovery = RadarDiscovery {
             brand: Brand::Furuno,
             model: Some("DRS4D-NXT".into()),
             name: "Test Radar".into(),
-            address: "192.168.1.100:10010".into(),
-            data_port: 10024,
-            command_port: 10025,
+            address: SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 100), 10010),
             spokes_per_revolution: 2048,
             max_spoke_len: 512,
             pixel_values: 64,

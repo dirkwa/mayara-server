@@ -213,28 +213,13 @@ impl IoProvider for TokioIoProvider {
     fn udp_join_multicast(
         &mut self,
         socket: &UdpSocketHandle,
-        group: &str,
-        interface: &str,
+        group: Ipv4Addr,
+        interface: Ipv4Addr,
     ) -> Result<(), IoError> {
         let state = self
             .udp_sockets
             .get(&socket.0)
             .ok_or_else(|| IoError::new(-1, "Invalid socket handle"))?;
-
-        let multicast_addr: Ipv4Addr = group.parse().map_err(|e| {
-            IoError::new(-1, format!("Invalid multicast address '{}': {}", group, e))
-        })?;
-
-        let interface_addr: Ipv4Addr = if interface.is_empty() {
-            Ipv4Addr::UNSPECIFIED
-        } else {
-            interface.parse().map_err(|e| {
-                IoError::new(
-                    -1,
-                    format!("Invalid interface address '{}': {}", interface, e),
-                )
-            })?
-        };
 
         // CRITICAL: Linux requires disabling IP_MULTICAST_ALL
         // Without this, the kernel delivers multicast packets to ALL sockets that joined
@@ -269,7 +254,7 @@ impl IoProvider for TokioIoProvider {
 
         state
             .socket
-            .join_multicast_v4(multicast_addr, interface_addr)
+            .join_multicast_v4(group, interface)
             .map_err(|e| IoError::new(-1, format!("Failed to join multicast {}: {}", group, e)))
     }
 
@@ -277,18 +262,14 @@ impl IoProvider for TokioIoProvider {
         &mut self,
         socket: &UdpSocketHandle,
         data: &[u8],
-        addr: &str,
-        port: u16,
+        addr: SocketAddrV4,
     ) -> Result<usize, IoError> {
         let state = self
             .udp_sockets
             .get(&socket.0)
             .ok_or_else(|| IoError::new(-1, "Invalid socket handle"))?;
 
-        let ip: Ipv4Addr = addr
-            .parse()
-            .map_err(|e| IoError::new(-1, format!("Invalid address '{}': {}", addr, e)))?;
-        let target = SocketAddr::V4(SocketAddrV4::new(ip, port));
+        let target = SocketAddr::V4(addr);
 
         // Use try_send_to for non-blocking send
         state
@@ -301,17 +282,24 @@ impl IoProvider for TokioIoProvider {
         &mut self,
         socket: &UdpSocketHandle,
         buf: &mut [u8],
-    ) -> Option<(usize, String, u16)> {
+    ) -> Option<(usize, SocketAddrV4)> {
         let state = self.udp_sockets.get(&socket.0)?;
 
         // Use try_recv_from for non-blocking receive
         match state.socket.try_recv_from(buf) {
             Ok((len, addr)) => {
-                let ip = match addr {
-                    SocketAddr::V4(v4) => v4.ip().to_string(),
-                    SocketAddr::V6(v6) => v6.ip().to_string(),
+                let addr_v4 = match addr {
+                    SocketAddr::V4(v4) => v4,
+                    SocketAddr::V6(v6) => {
+                        // Try to extract mapped IPv4
+                        if let Some(ipv4) = v6.ip().to_ipv4_mapped() {
+                            SocketAddrV4::new(ipv4, v6.port())
+                        } else {
+                            return None; // Can't handle pure IPv6
+                        }
+                    }
                 };
-                Some((len, ip, addr.port()))
+                Some((len, addr_v4))
             }
             Err(ref e) if e.kind() == ErrorKind::WouldBlock => None,
             Err(_) => None,
@@ -331,7 +319,7 @@ impl IoProvider for TokioIoProvider {
     fn udp_bind_interface(
         &mut self,
         socket: &UdpSocketHandle,
-        interface: &str,
+        interface: Ipv4Addr,
     ) -> Result<(), IoError> {
         let state = self
             .udp_sockets
@@ -341,13 +329,7 @@ impl IoProvider for TokioIoProvider {
         // Get current port from the socket
         let current_port = state.socket.local_addr().map(|a| a.port()).unwrap_or(0);
 
-        // Parse the interface IP address
-        let interface_ip: Ipv4Addr = interface.parse().map_err(|e| {
-            IoError::new(
-                -1,
-                format!("Invalid interface address '{}': {}", interface, e),
-            )
-        })?;
+        let interface_ip = interface;
 
         // Recreate the socket bound to the specific interface
         let new_socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
@@ -446,18 +428,14 @@ impl IoProvider for TokioIoProvider {
     fn tcp_connect(
         &mut self,
         socket: &TcpSocketHandle,
-        addr: &str,
-        port: u16,
+        addr: SocketAddrV4,
     ) -> Result<(), IoError> {
         let state = self
             .tcp_sockets
             .get_mut(&socket.0)
             .ok_or_else(|| IoError::new(-1, "Invalid socket handle"))?;
 
-        let ip: Ipv4Addr = addr
-            .parse()
-            .map_err(|e| IoError::new(-1, format!("Invalid address '{}': {}", addr, e)))?;
-        let target = SocketAddr::V4(SocketAddrV4::new(ip, port));
+        let target = SocketAddr::V4(addr);
 
         // Start async connect - we'll poll for completion
         state.connecting = true;

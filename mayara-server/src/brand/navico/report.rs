@@ -129,11 +129,9 @@ impl NavicoReportReceiver {
             log::debug!("{}: Starting controller (unified)", key);
             Some(NavicoController::new(
                 &key,
-                &info.send_command_addr.ip().to_string(),
-                info.send_command_addr.port(),
-                &info.report_addr.ip().to_string(),
-                info.report_addr.port(),
-                &info.nic_addr.to_string(),
+                info.send_command_addr,
+                info.report_addr,
+                info.nic_addr,
                 core_model,
             ))
         } else {
@@ -234,7 +232,7 @@ impl NavicoReportReceiver {
         if self.info_socket.is_some() {
             return Ok(()); // Already started
         }
-        let info_addr = SocketAddrV4::new(INFO_ADDR.parse().unwrap(), INFO_PORT);
+        let info_addr = SocketAddrV4::new(INFO_ADDR, INFO_PORT);
         match create_udp_multicast_listen(&info_addr, &self.info.nic_addr) {
             Ok(socket) => {
                 self.info_socket = Some(socket);
@@ -263,7 +261,7 @@ impl NavicoReportReceiver {
         if self.speed_socket.is_some() {
             return Ok(()); // Already started
         }
-        let speed_addr = SocketAddrV4::new(SPEED_ADDR_A.parse().unwrap(), SPEED_PORT_A);
+        let speed_addr = SocketAddrV4::new(SPEED_ADDR_A, SPEED_PORT_A);
         match create_udp_multicast_listen(&speed_addr, &self.info.nic_addr) {
             Ok(socket) => {
                 self.speed_socket = Some(socket);
