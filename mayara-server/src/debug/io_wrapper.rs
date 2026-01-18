@@ -63,6 +63,7 @@
 //! - Memory usage scales with event buffer size (configurable in DebugHub)
 
 use std::collections::HashMap;
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 
 use mayara_core::io::{IoError, IoProvider, TcpSocketHandle, UdpSocketHandle};
@@ -539,8 +540,8 @@ impl<T: IoProvider> IoProvider for DebugIoProvider<T> {
     fn udp_join_multicast(
         &mut self,
         socket: &UdpSocketHandle,
-        group: &str,
-        interface: &str,
+        group: Ipv4Addr,
+        interface: Ipv4Addr,
     ) -> Result<(), IoError> {
         let result = self.inner.udp_join_multicast(socket, group, interface);
         self.submit_socket_op(
@@ -563,12 +564,11 @@ impl<T: IoProvider> IoProvider for DebugIoProvider<T> {
         &mut self,
         socket: &UdpSocketHandle,
         data: &[u8],
-        addr: &str,
-        port: u16,
+        addr: SocketAddrV4,
     ) -> Result<usize, IoError> {
-        let result = self.inner.udp_send_to(socket, data, addr, port);
+        let result = self.inner.udp_send_to(socket, data, addr);
         if result.is_ok() {
-            self.submit_data(IoDirection::Send, ProtocolType::Udp, addr, port, data);
+            self.submit_data(IoDirection::Send, ProtocolType::Udp, &addr.ip().to_string(), addr.port(), data);
         }
         result
     }
@@ -577,14 +577,14 @@ impl<T: IoProvider> IoProvider for DebugIoProvider<T> {
         &mut self,
         socket: &UdpSocketHandle,
         buf: &mut [u8],
-    ) -> Option<(usize, String, u16)> {
+    ) -> Option<(usize, SocketAddrV4)> {
         let result = self.inner.udp_recv_from(socket, buf);
-        if let Some((len, addr, port)) = &result {
+        if let Some((len, addr)) = &result {
             self.submit_data(
                 IoDirection::Recv,
                 ProtocolType::Udp,
-                addr,
-                *port,
+                &addr.ip().to_string(),
+                addr.port(),
                 &buf[..*len],
             );
         }
@@ -604,7 +604,7 @@ impl<T: IoProvider> IoProvider for DebugIoProvider<T> {
     fn udp_bind_interface(
         &mut self,
         socket: &UdpSocketHandle,
-        interface: &str,
+        interface: Ipv4Addr,
     ) -> Result<(), IoError> {
         self.inner.udp_bind_interface(socket, interface)
     }
@@ -628,21 +628,20 @@ impl<T: IoProvider> IoProvider for DebugIoProvider<T> {
     fn tcp_connect(
         &mut self,
         socket: &TcpSocketHandle,
-        addr: &str,
-        port: u16,
+        addr: SocketAddrV4,
     ) -> Result<(), IoError> {
-        let result = self.inner.tcp_connect(socket, addr, port);
+        let result = self.inner.tcp_connect(socket, addr);
         self.submit_socket_op(
             SocketOperation::Connect {
-                addr: addr.to_string(),
-                port,
+                addr: addr.ip().to_string(),
+                port: addr.port(),
             },
             result.is_ok(),
             result.as_ref().err().map(|e| e.to_string()),
         );
         if result.is_ok() {
             self.tcp_destinations
-                .insert(socket.0, (addr.to_string(), port));
+                .insert(socket.0, (addr.ip().to_string(), addr.port()));
         }
         result
     }
