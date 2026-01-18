@@ -39,7 +39,10 @@ mod rd;
 // Every 5 seconds we ask the radar for reports, so we can update our controls
 const REPORT_REQUEST_INTERVAL: Duration = Duration::from_millis(5000);
 
-// The LookupSpokeEnum is an index into an array, really
+// Raymarine spoke processing lookup tables.
+// NOTE: Unlike Navico (which uses core's SpokeProcessor), Raymarine has different
+// processing: bytes are divided by 2, and Doppler markers are 0xFF/0xFE (not 0x0F/0x0E).
+// A future refactor could add a Raymarine-specific processor to mayara-core.
 enum LookupDoppler {
     Normal = 0,
     Doppler = 1,
