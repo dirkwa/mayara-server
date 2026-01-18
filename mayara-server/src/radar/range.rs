@@ -15,7 +15,7 @@ use crate::radar::NAUTICAL_MILE_F64;
 
 use super::NAUTICAL_MILE;
 
-#[derive(Debug, Clone, Copy, Eq, Ord)]
+#[derive(Debug, Clone, Copy, Eq)]
 pub struct Range {
     distance: i32,
     index: usize,
@@ -72,6 +72,12 @@ impl Range {
 
     fn is_marked(&self) -> bool {
         self.index > 0
+    }
+}
+
+impl Ord for Range {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.distance.cmp(&other.distance)
     }
 }
 
