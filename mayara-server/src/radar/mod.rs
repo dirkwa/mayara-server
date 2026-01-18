@@ -33,10 +33,6 @@ pub(crate) const NAUTICAL_MILE_F64: f64 = 1852.; // 1 nautical mile in meters
 // A "native to radar" bearing, usually [0..2048] or [0..4096] or [0..8192]
 pub(crate) type SpokeBearing = u16;
 
-// NOTE: mayara-core also exports BYTE_LOOKUP_LENGTH (in protocol::navico).
-// This server copy is used by Raymarine which hasn't been migrated to core yet.
-pub(crate) const BYTE_LOOKUP_LENGTH: usize = (u8::MAX as usize) + 1;
-
 #[derive(Error, Debug)]
 pub enum RadarError {
     #[error("I/O operation failed")]
