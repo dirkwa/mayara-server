@@ -638,12 +638,8 @@ impl SharedRadars {
     pub fn update_from_discovery(&self, discovery: &mayara_core::radar::RadarDiscovery) {
         use mayara_core::Brand as CoreBrand;
 
-        // Extract IP from discovery address (which may be "ip:port" or just "ip")
-        let discovery_ip = discovery
-            .address
-            .split(':')
-            .next()
-            .unwrap_or(&discovery.address);
+        // Get IP from discovery address (now typed as SocketAddrV4)
+        let discovery_ip = *discovery.address.ip();
 
         // Find radar by matching address
         let matching_key = {
@@ -651,10 +647,7 @@ impl SharedRadars {
             radars
                 .info
                 .iter()
-                .find(|(_, info)| {
-                    let info_ip = info.addr.ip().to_string();
-                    info_ip == discovery_ip
-                })
+                .find(|(_, info)| *info.addr.ip() == discovery_ip)
                 .map(|(key, _)| key.clone())
         };
 

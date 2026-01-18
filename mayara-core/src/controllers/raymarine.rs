@@ -16,6 +16,8 @@
 //! | Quantum | Q24, Q24C, Q24D, Cyclone | 250 | Q24D, Cyclone |
 //! | RD | RD418/424 HD, Magnum | 2048 | No |
 
+use std::net::{Ipv4Addr, SocketAddrV4};
+
 use crate::io::{IoProvider, UdpSocketHandle};
 
 /// Raymarine radar variant
@@ -51,12 +53,10 @@ pub enum RaymarineControllerState {
 pub struct RaymarineController {
     /// Radar ID (for logging)
     radar_id: String,
-    /// Command address (from beacon)
-    command_addr: String,
-    command_port: u16,
-    /// Report multicast address (from beacon)
-    report_addr: String,
-    report_port: u16,
+    /// Command address (IP + port)
+    command_addr: SocketAddrV4,
+    /// Report multicast address (IP + port)
+    report_addr: SocketAddrV4,
     /// Command socket
     command_socket: Option<UdpSocketHandle>,
     /// Report socket
@@ -75,19 +75,15 @@ impl RaymarineController {
     /// Create a new Raymarine controller
     pub fn new(
         radar_id: &str,
-        command_addr: &str,
-        command_port: u16,
-        report_addr: &str,
-        report_port: u16,
+        command_addr: SocketAddrV4,
+        report_addr: SocketAddrV4,
         variant: RaymarineVariant,
         has_doppler: bool,
     ) -> Self {
         Self {
             radar_id: radar_id.to_string(),
-            command_addr: command_addr.to_string(),
-            command_port,
-            report_addr: report_addr.to_string(),
-            report_port,
+            command_addr,
+            report_addr,
             command_socket: None,
             report_socket: None,
             state: RaymarineControllerState::Disconnected,
@@ -139,8 +135,8 @@ impl RaymarineController {
                 if io.udp_bind(&socket, 0).is_ok() {
                     self.command_socket = Some(socket);
                     io.debug(&format!(
-                        "[{}] Command socket created for {}:{}",
-                        self.radar_id, self.command_addr, self.command_port
+                        "[{}] Command socket created for {}",
+                        self.radar_id, self.command_addr
                     ));
                 } else {
                     io.udp_close(socket);
@@ -157,15 +153,15 @@ impl RaymarineController {
         // Create report socket
         match io.udp_create() {
             Ok(socket) => {
-                if io.udp_bind(&socket, self.report_port).is_ok() {
+                if io.udp_bind(&socket, self.report_addr.port()).is_ok() {
                     if io
-                        .udp_join_multicast(&socket, &self.report_addr, "")
+                        .udp_join_multicast(&socket, *self.report_addr.ip(), Ipv4Addr::UNSPECIFIED)
                         .is_ok()
                     {
                         self.report_socket = Some(socket);
                         io.debug(&format!(
-                            "[{}] Joined report multicast {}:{}",
-                            self.radar_id, self.report_addr, self.report_port
+                            "[{}] Joined report multicast {}",
+                            self.radar_id, self.report_addr
                         ));
                         self.state = RaymarineControllerState::Listening;
                     } else {
@@ -195,7 +191,7 @@ impl RaymarineController {
         // Process incoming reports
         if let Some(socket) = self.report_socket {
             let mut buf = [0u8; 2048];
-            while let Some((len, _addr, _port)) = io.udp_recv_from(&socket, &mut buf) {
+            while let Some((len, _addr)) = io.udp_recv_from(&socket, &mut buf) {
                 self.process_report(io, &buf[..len]);
                 activity = true;
                 if self.state == RaymarineControllerState::Listening {
@@ -227,7 +223,7 @@ impl RaymarineController {
 
     fn send_command<I: IoProvider>(&self, io: &mut I, data: &[u8]) {
         if let Some(socket) = self.command_socket {
-            if let Err(e) = io.udp_send_to(&socket, data, &self.command_addr, self.command_port) {
+            if let Err(e) = io.udp_send_to(&socket, data, self.command_addr) {
                 io.debug(&format!(
                     "[{}] Failed to send command: {}",
                     self.radar_id, e

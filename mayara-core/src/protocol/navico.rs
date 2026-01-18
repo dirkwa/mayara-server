@@ -10,6 +10,8 @@
 //! - **4G**: Fourth generation with dual range capability
 //! - **HALO**: High-definition series with Doppler support
 
+use std::net::{Ipv4Addr, SocketAddrV4};
+
 use super::c_string;
 use crate::error::ParseError;
 use crate::radar::RadarDiscovery;
@@ -39,23 +41,23 @@ pub const BITS_PER_PIXEL: usize = 4;
 pub const SPOKE_DATA_BYTES: usize = MAX_SPOKE_LEN as usize / 2; // 512 bytes
 
 /// BR24 beacon multicast address
-pub const BR24_BEACON_ADDR: &str = "236.6.7.4";
+pub const BR24_BEACON_ADDR: Ipv4Addr = Ipv4Addr::new(236, 6, 7, 4);
 pub const BR24_BEACON_PORT: u16 = 6768;
 
 /// Gen3/Gen4/HALO beacon multicast address
-pub const GEN3_BEACON_ADDR: &str = "236.6.7.5";
+pub const GEN3_BEACON_ADDR: Ipv4Addr = Ipv4Addr::new(236, 6, 7, 5);
 pub const GEN3_BEACON_PORT: u16 = 6878;
 
 /// Info multicast address (for heading/navigation data)
-pub const INFO_ADDR: &str = "239.238.55.73";
+pub const INFO_ADDR: Ipv4Addr = Ipv4Addr::new(239, 238, 55, 73);
 pub const INFO_PORT: u16 = 7527;
 
 /// Speed multicast address A
-pub const SPEED_ADDR_A: &str = "236.6.7.20";
+pub const SPEED_ADDR_A: Ipv4Addr = Ipv4Addr::new(236, 6, 7, 20);
 pub const SPEED_PORT_A: u16 = 6690;
 
 /// Speed multicast address B
-pub const SPEED_ADDR_B: &str = "236.6.7.15";
+pub const SPEED_ADDR_B: Ipv4Addr = Ipv4Addr::new(236, 6, 7, 15);
 pub const SPEED_PORT_B: u16 = 6005;
 
 const BEACON_POLL_INTERVAL: u64 = 20; // Poll every 20 cycles
@@ -170,12 +172,14 @@ impl NetworkSocketAddrV4 {
         self.addr
     }
 
+    /// Convert to standard library Ipv4Addr
+    pub fn to_ipv4(&self) -> Ipv4Addr {
+        Ipv4Addr::new(self.addr[0], self.addr[1], self.addr[2], self.addr[3])
+    }
+
     /// Get IP address as string
     pub fn ip_string(&self) -> String {
-        format!(
-            "{}.{}.{}.{}",
-            self.addr[0], self.addr[1], self.addr[2], self.addr[3]
-        )
+        self.to_ipv4().to_string()
     }
 
     /// Get port number
@@ -183,9 +187,14 @@ impl NetworkSocketAddrV4 {
         u16::from_be_bytes(self.port)
     }
 
+    /// Convert to standard library SocketAddrV4
+    pub fn to_socket_addr(&self) -> SocketAddrV4 {
+        SocketAddrV4::new(self.to_ipv4(), self.port())
+    }
+
     /// Get as "ip:port" string
     pub fn as_string(&self) -> String {
-        format!("{}:{}", self.ip_string(), self.port())
+        self.to_socket_addr().to_string()
     }
 }
 
@@ -805,7 +814,7 @@ pub fn is_address_request(data: &[u8]) -> bool {
 /// For dual-range radars (4G, HALO), returns two discoveries (A and B ranges).
 pub fn parse_beacon_response(
     data: &[u8],
-    source_addr: &str,
+    source_addr: SocketAddrV4,
 ) -> Result<Vec<RadarDiscovery>, ParseError> {
     if data.len() < 2 {
         return Err(ParseError::TooShort {
@@ -843,7 +852,7 @@ pub fn parse_beacon_response(
     })
 }
 
-fn parse_beacon_dual(data: &[u8], source_addr: &str) -> Result<Vec<RadarDiscovery>, ParseError> {
+fn parse_beacon_dual(data: &[u8], source_addr: SocketAddrV4) -> Result<Vec<RadarDiscovery>, ParseError> {
     let beacon: BeaconDual = bincode::deserialize(data)?;
 
     let serial_no = c_string(&beacon.header.serial_no).ok_or(ParseError::InvalidString)?;
@@ -854,40 +863,36 @@ fn parse_beacon_dual(data: &[u8], source_addr: &str) -> Result<Vec<RadarDiscover
             brand: Brand::Navico,
             model: None, // Model comes from Report 03
             name: serial_no.clone(),
-            address: source_addr.to_string(),
-            data_port: beacon.a.data.port(),
-            command_port: beacon.a.send.port(),
+            address: source_addr,
             spokes_per_revolution: SPOKES_PER_REVOLUTION,
             max_spoke_len: MAX_SPOKE_LEN,
             pixel_values: 16, // 4-bit pixels
             serial_number: None,
             nic_address: None, // Set by locator
             suffix: Some("A".into()),
-            data_address: Some(beacon.a.data.as_string()),
-            report_address: Some(beacon.a.report.as_string()),
-            send_address: Some(beacon.a.send.as_string()),
+            data_address: Some(beacon.a.data.to_socket_addr()),
+            report_address: Some(beacon.a.report.to_socket_addr()),
+            send_address: Some(beacon.a.send.to_socket_addr()),
         },
         RadarDiscovery {
             brand: Brand::Navico,
             model: None,
             name: serial_no,
-            address: source_addr.to_string(),
-            data_port: beacon.b.data.port(),
-            command_port: beacon.b.send.port(),
+            address: source_addr,
             spokes_per_revolution: SPOKES_PER_REVOLUTION,
             max_spoke_len: MAX_SPOKE_LEN,
             pixel_values: 16,
             serial_number: None,
             nic_address: None,
             suffix: Some("B".into()),
-            data_address: Some(beacon.b.data.as_string()),
-            report_address: Some(beacon.b.report.as_string()),
-            send_address: Some(beacon.b.send.as_string()),
+            data_address: Some(beacon.b.data.to_socket_addr()),
+            report_address: Some(beacon.b.report.to_socket_addr()),
+            send_address: Some(beacon.b.send.to_socket_addr()),
         },
     ])
 }
 
-fn parse_beacon_single(data: &[u8], source_addr: &str) -> Result<Vec<RadarDiscovery>, ParseError> {
+fn parse_beacon_single(data: &[u8], source_addr: SocketAddrV4) -> Result<Vec<RadarDiscovery>, ParseError> {
     let beacon: BeaconSingle = bincode::deserialize(data)?;
 
     let serial_no = c_string(&beacon.header.serial_no).ok_or(ParseError::InvalidString)?;
@@ -896,22 +901,20 @@ fn parse_beacon_single(data: &[u8], source_addr: &str) -> Result<Vec<RadarDiscov
         brand: Brand::Navico,
         model: None,
         name: serial_no,
-        address: source_addr.to_string(),
-        data_port: beacon.a.data.port(),
-        command_port: beacon.a.send.port(),
+        address: source_addr,
         spokes_per_revolution: SPOKES_PER_REVOLUTION,
         max_spoke_len: MAX_SPOKE_LEN,
         pixel_values: 16,
         serial_number: None,
         nic_address: None, // Set by locator
         suffix: None,
-        data_address: Some(beacon.a.data.as_string()),
-        report_address: Some(beacon.a.report.as_string()),
-        send_address: Some(beacon.a.send.as_string()),
+        data_address: Some(beacon.a.data.to_socket_addr()),
+        report_address: Some(beacon.a.report.to_socket_addr()),
+        send_address: Some(beacon.a.send.to_socket_addr()),
     }])
 }
 
-fn parse_beacon_br24(data: &[u8], source_addr: &str) -> Result<Vec<RadarDiscovery>, ParseError> {
+fn parse_beacon_br24(data: &[u8], source_addr: SocketAddrV4) -> Result<Vec<RadarDiscovery>, ParseError> {
     let beacon: BR24Beacon = bincode::deserialize(data)?;
 
     let serial_no = c_string(&beacon.serial_no).ok_or(ParseError::InvalidString)?;
@@ -920,18 +923,16 @@ fn parse_beacon_br24(data: &[u8], source_addr: &str) -> Result<Vec<RadarDiscover
         brand: Brand::Navico,
         model: Some("BR24".to_string()),
         name: serial_no,
-        address: source_addr.to_string(),
-        data_port: beacon.data.port(),
-        command_port: beacon.send.port(),
+        address: source_addr,
         spokes_per_revolution: SPOKES_PER_REVOLUTION,
         max_spoke_len: MAX_SPOKE_LEN,
         pixel_values: 16,
         serial_number: None,
         nic_address: None, // Set by locator
         suffix: None,
-        data_address: Some(beacon.data.as_string()),
-        report_address: Some(beacon.report.as_string()),
-        send_address: Some(beacon.send.as_string()),
+        data_address: Some(beacon.data.to_socket_addr()),
+        report_address: Some(beacon.report.to_socket_addr()),
+        send_address: Some(beacon.send.to_socket_addr()),
     }])
 }
 
@@ -1605,24 +1606,27 @@ pub(crate) fn poll_beacon_packets(
     io: &mut dyn IoProvider,
     buf: &mut [u8],
     discoveries: &mut Vec<RadarDiscovery>,
-    model_reports: &mut Vec<(String, Option<String>, Option<String>)>,
+    _model_reports: &mut Vec<(String, Option<String>, Option<String>)>,
 ) {
     // Poll Navico BR24 / Gen3/4/HALO beacons
     if let Some(socket) = brand_status.socket {
         if poll_count % BEACON_POLL_INTERVAL == 0 {
-            if let (Some(addr), Some(port)) = (brand_status.multicast.as_ref(), brand_status.port) {
-                // Send to multicast address/port
-                if let Err(e) = io.udp_send_to(&socket, create_address_request(), addr, port) {
-                    io.debug(&format!("Navico beacon address request send error: {}", e));
+            if let (Some(addr_str), Some(port)) = (brand_status.multicast.as_ref(), brand_status.port) {
+                // Parse multicast address and send
+                if let Ok(addr) = addr_str.parse::<Ipv4Addr>() {
+                    let dest = SocketAddrV4::new(addr, port);
+                    if let Err(e) = io.udp_send_to(&socket, create_address_request(), dest) {
+                        io.debug(&format!("Navico beacon address request send error: {}", e));
+                    }
                 }
             }
         }
-        while let Some((len, addr, _port)) = io.udp_recv_from(&socket, buf) {
+        while let Some((len, addr)) = io.udp_recv_from(&socket, buf) {
             let data = &buf[..len];
             if !is_beacon_response(data) {
                 continue;
             }
-            match parse_beacon_response(data, &addr) {
+            match parse_beacon_response(data, addr) {
                 Ok(discovered) => {
                     for d in &discovered {
                         io.debug(&format!(

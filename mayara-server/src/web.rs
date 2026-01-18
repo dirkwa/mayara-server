@@ -221,7 +221,7 @@ impl Web {
             // Add a Furuno radar as placeholder - the brand doesn't matter
             // since we're only using the feature processors (ARPA, GuardZones, etc.)
             // not the controller functionality
-            engine.add_furuno(radar_id, "0.0.0.0");
+            engine.add_furuno(radar_id, std::net::Ipv4Addr::UNSPECIFIED);
         }
     }
 
@@ -229,7 +229,7 @@ impl Web {
     fn ensure_radar_in_engine_with_model(&self, radar_id: &str, model_name: &str) {
         let mut engine = self.engine.write().unwrap();
         if !engine.contains(radar_id) {
-            engine.add_furuno(radar_id, "0.0.0.0");
+            engine.add_furuno(radar_id, std::net::Ipv4Addr::UNSPECIFIED);
         }
         // Set model info (creates dual_range controller if model supports it)
         engine.set_model_info(radar_id, model_name);

@@ -19,6 +19,8 @@
 //! [4 bytes] value (LE u32)
 //! ```
 
+use std::net::{Ipv4Addr, SocketAddrV4};
+
 use crate::io::{IoProvider, UdpSocketHandle};
 use crate::protocol::garmin;
 
@@ -40,7 +42,7 @@ pub struct GarminController {
     /// Radar ID (for logging)
     radar_id: String,
     /// Radar IP address (for commands)
-    radar_addr: String,
+    radar_addr: Ipv4Addr,
     /// Command socket
     command_socket: Option<UdpSocketHandle>,
     /// Report socket
@@ -53,10 +55,10 @@ pub struct GarminController {
 
 impl GarminController {
     /// Create a new Garmin controller
-    pub fn new(radar_id: &str, radar_addr: &str) -> Self {
+    pub fn new(radar_id: &str, radar_addr: Ipv4Addr) -> Self {
         Self {
             radar_id: radar_id.to_string(),
-            radar_addr: radar_addr.to_string(),
+            radar_addr,
             command_socket: None,
             report_socket: None,
             state: GarminControllerState::Disconnected,
@@ -118,7 +120,7 @@ impl GarminController {
             Ok(socket) => {
                 if io.udp_bind(&socket, garmin::REPORT_PORT).is_ok() {
                     if io
-                        .udp_join_multicast(&socket, garmin::REPORT_ADDR, "")
+                        .udp_join_multicast(&socket, garmin::REPORT_ADDR, Ipv4Addr::UNSPECIFIED)
                         .is_ok()
                     {
                         self.report_socket = Some(socket);
@@ -156,7 +158,7 @@ impl GarminController {
         // Process incoming reports
         if let Some(socket) = self.report_socket {
             let mut buf = [0u8; 2048];
-            while let Some((len, _addr, _port)) = io.udp_recv_from(&socket, &mut buf) {
+            while let Some((len, _addr)) = io.udp_recv_from(&socket, &mut buf) {
                 self.process_report(io, &buf[..len]);
                 activity = true;
                 if self.state == GarminControllerState::Listening {
@@ -176,7 +178,8 @@ impl GarminController {
 
     fn send_command<I: IoProvider>(&self, io: &mut I, data: &[u8]) {
         if let Some(socket) = self.command_socket {
-            if let Err(e) = io.udp_send_to(&socket, data, &self.radar_addr, garmin::SEND_PORT) {
+            let addr = SocketAddrV4::new(self.radar_addr, garmin::SEND_PORT);
+            if let Err(e) = io.udp_send_to(&socket, data, addr) {
                 io.debug(&format!(
                     "[{}] Failed to send command: {}",
                     self.radar_id, e

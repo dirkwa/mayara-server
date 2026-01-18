@@ -8,6 +8,8 @@
 //! Unlike other brands, Garmin doesn't have a structured beacon packet.
 //! Discovery happens by receiving any packet on the report multicast address.
 
+use std::net::{Ipv4Addr, SocketAddrV4};
+
 use serde::Deserialize;
 
 use crate::error::ParseError;
@@ -19,12 +21,12 @@ use crate::{Brand, BrandStatus, IoProvider};
 // =============================================================================
 
 /// Report multicast address
-pub const REPORT_ADDR: &str = "239.254.2.0";
+pub const REPORT_ADDR: Ipv4Addr = Ipv4Addr::new(239, 254, 2, 0);
 /// Report multicast port
 pub const REPORT_PORT: u16 = 50100;
 
 /// Data multicast address
-pub const DATA_ADDR: &str = "239.254.2.0";
+pub const DATA_ADDR: Ipv4Addr = Ipv4Addr::new(239, 254, 2, 0);
 /// Data multicast port
 pub const DATA_PORT: u16 = 50102;
 
@@ -347,23 +349,21 @@ pub fn parse_spoke_header(data: &[u8]) -> Result<ParsedSpokeHeader, ParseError> 
 ///
 /// Garmin discovery is different from other brands - we just need the
 /// source IP address of any report packet.
-pub fn create_discovery(source_addr: &str) -> RadarDiscovery {
+pub fn create_discovery(source_addr: SocketAddrV4) -> RadarDiscovery {
     RadarDiscovery {
         brand: Brand::Garmin,
         model: Some("xHD".to_string()),
-        name: format!("Garmin xHD @ {}", source_addr),
-        address: source_addr.to_string(),
-        data_port: DATA_PORT,
-        command_port: SEND_PORT,
+        name: format!("Garmin xHD @ {}", source_addr.ip()),
+        address: source_addr,
         spokes_per_revolution: SPOKES_PER_REVOLUTION,
         max_spoke_len: MAX_SPOKE_LEN,
         pixel_values: PIXEL_VALUES,
         serial_number: None,
         nic_address: None, // Set by locator
         suffix: None,
-        data_address: None,
-        report_address: None,
-        send_address: None,
+        data_address: Some(SocketAddrV4::new(DATA_ADDR, DATA_PORT)),
+        report_address: Some(SocketAddrV4::new(REPORT_ADDR, REPORT_PORT)),
+        send_address: Some(SocketAddrV4::new(*source_addr.ip(), SEND_PORT)),
     }
 }
 
@@ -442,18 +442,17 @@ fn poll_beacon_packets(
     io: &mut dyn IoProvider,
     buf: &mut [u8],
     discoveries: &mut Vec<RadarDiscovery>,
-    model_reports: &mut Vec<(String, Option<String>, Option<String>)>,
+    _model_reports: &mut Vec<(String, Option<String>, Option<String>)>,
 ) {
-    // Poll Navico BR24 / Gen3/4/HALO beacons
+    // Poll Garmin report packets for discovery
     if let Some(socket) = brand_status.socket {
-        while let Some((len, addr, _port)) = io.udp_recv_from(&socket, buf) {
+        while let Some((len, addr)) = io.udp_recv_from(&socket, buf) {
             let data = &buf[..len];
             if !is_report_packet(data) {
                 continue;
             }
-            let discovery = create_discovery(&addr);
-            let discovered = vec![discovery];
-            discoveries.extend(discovered);
+            let discovery = create_discovery(addr);
+            discoveries.push(discovery);
         }
     }
 }
@@ -547,11 +546,13 @@ mod tests {
 
     #[test]
     fn test_create_discovery() {
-        let disc = create_discovery("192.168.1.100");
+        use std::net::{Ipv4Addr, SocketAddrV4};
+        let source = SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 100), 50100);
+        let disc = create_discovery(source);
         assert_eq!(disc.brand, Brand::Garmin);
         assert_eq!(disc.model, Some("xHD".to_string()));
-        assert_eq!(disc.data_port, 50102);
-        assert_eq!(disc.command_port, 50101);
+        assert_eq!(disc.data_address.unwrap().port(), DATA_PORT); // 50102
+        assert_eq!(disc.send_address.unwrap().port(), SEND_PORT); // 50101
         assert_eq!(disc.spokes_per_revolution, 1440);
     }
 

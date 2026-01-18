@@ -23,11 +23,13 @@ pub const SPOKES_PER_REVOLUTION: u16 = 8192;
 /// Maximum spoke length in pixels
 pub const MAX_SPOKE_LEN: u16 = 884;
 
+use std::net::{Ipv4Addr, SocketAddrV4};
+
 /// Base port for Furuno radar communication
 pub const BASE_PORT: u16 = 10000;
 
 /// Furuno beacon/announce broadcast address
-pub const BEACON_BROADCAST: &str = "172.31.255.255";
+pub const BEACON_BROADCAST: Ipv4Addr = Ipv4Addr::new(172, 31, 255, 255);
 
 /// Port for beacon discovery (broadcast)
 pub const BEACON_PORT: u16 = BASE_PORT + 10;
@@ -36,10 +38,10 @@ pub const BEACON_PORT: u16 = BASE_PORT + 10;
 pub const DATA_PORT: u16 = BASE_PORT + 24;
 
 /// Broadcast address for Furuno radars
-pub const BROADCAST_ADDR: &str = "172.31.255.255";
+pub const BROADCAST_ADDR: Ipv4Addr = Ipv4Addr::new(172, 31, 255, 255);
 
 /// Multicast address for spoke data
-pub const DATA_MULTICAST_ADDR: &str = "239.255.0.2";
+pub const DATA_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(239, 255, 0, 2);
 
 // Send Furuno announce periodically (every ~2 seconds at 10 polls/sec)
 // Note: ANNOUNCE_INTERVAL of 20 * 100ms poll interval = 2 seconds
@@ -227,12 +229,12 @@ pub fn is_model_report(data: &[u8]) -> bool {
 ///
 /// # Arguments
 /// * `data` - Raw packet bytes (at least 32 bytes)
-/// * `source_addr` - Source IP address as string (for RadarDiscovery)
+/// * `source_addr` - Source IP address (for RadarDiscovery)
 ///
 /// # Returns
 /// * `Ok(RadarDiscovery)` with parsed radar information
 /// * `Err(ParseError)` if packet is invalid
-pub fn parse_beacon_response(data: &[u8], source_addr: &str) -> Result<RadarDiscovery, ParseError> {
+pub fn parse_beacon_response(data: &[u8], source_addr: SocketAddrV4) -> Result<RadarDiscovery, ParseError> {
     // Check minimum length
     if data.len() < 32 {
         return Err(ParseError::TooShort {
@@ -276,16 +278,14 @@ pub fn parse_beacon_response(data: &[u8], source_addr: &str) -> Result<RadarDisc
         brand: Brand::Furuno,
         model: None, // Model comes from UDP model report
         name,
-        address: source_addr.to_string(),
-        data_port: DATA_PORT,
-        command_port: 0, // Set after TCP login
+        address: source_addr,
         spokes_per_revolution: SPOKES_PER_REVOLUTION,
         max_spoke_len: MAX_SPOKE_LEN,
         pixel_values: 64,
         serial_number: None,
         nic_address: None, // Set by locator
         suffix: None,
-        data_address: None,
+        data_address: Some(SocketAddrV4::new(DATA_MULTICAST_ADDR, DATA_PORT)),
         report_address: None,
         send_address: None,
     })
@@ -632,11 +632,11 @@ pub(crate) fn poll_beacon_packets(
             send_furuno_announce(socket, io);
         }
 
-        while let Some((len, addr, _port)) = io.udp_recv_from(socket, buf) {
+        while let Some((len, addr)) = io.udp_recv_from(socket, buf) {
             let data = &buf[..len];
 
             if is_beacon_response(data) {
-                match parse_beacon_response(data, &addr) {
+                match parse_beacon_response(data, addr) {
                     Ok(discovery) => {
                         io.debug(&format!(
                             "Furuno beacon from {}: {:?}",
@@ -658,7 +658,7 @@ pub(crate) fn poll_beacon_packets(
                             addr, model, serial
                         ));
                         if model.is_some() || serial.is_some() {
-                            model_reports.push((addr.clone(), model, serial));
+                            model_reports.push((addr.to_string(), model, serial));
                         }
                     }
                     Err(e) => {
@@ -684,24 +684,23 @@ pub(crate) fn poll_beacon_packets(
 /// This should be called before attempting TCP connections to Furuno radars,
 /// as the radar only accepts TCP from clients that have recently announced.
 pub fn send_furuno_announce(socket: &UdpSocketHandle, io: &mut dyn IoProvider) {
-    let addr = BEACON_BROADCAST;
-    let port = BEACON_PORT;
+    let dest = SocketAddrV4::new(BEACON_BROADCAST, BEACON_PORT);
 
     // Send beacon request to broadcast
-    if let Err(e) = io.udp_send_to(socket, &REQUEST_BEACON_PACKET, addr, port) {
+    if let Err(e) = io.udp_send_to(socket, &REQUEST_BEACON_PACKET, dest) {
         io.debug(&format!("Failed to send Furuno beacon request: {}", e));
     }
 
     // Send model request to broadcast
-    if let Err(e) = io.udp_send_to(socket, &REQUEST_MODEL_PACKET, addr, port) {
+    if let Err(e) = io.udp_send_to(socket, &REQUEST_MODEL_PACKET, dest) {
         io.debug(&format!("Failed to send Furuno model request: {}", e));
     }
 
     // Send announce packet - this tells the radar we exist
-    if let Err(e) = io.udp_send_to(socket, &ANNOUNCE_PACKET, addr, port) {
+    if let Err(e) = io.udp_send_to(socket, &ANNOUNCE_PACKET, dest) {
         io.debug(&format!("Failed to send Furuno announce: {}", e));
     } else {
-        io.debug(&format!("Sent Furuno announce to {}:{}", addr, port));
+        io.debug(&format!("Sent Furuno announce to {}", dest));
     }
 
     // Note: UDP model requests (0x14) are unreliable - the response often has empty model/serial fields
@@ -731,7 +730,9 @@ mod tests {
 
     #[test]
     fn test_parse_beacon_response() {
-        let result = parse_beacon_response(&SAMPLE_BEACON, "172.31.6.1");
+        use std::net::{Ipv4Addr, SocketAddrV4};
+        let source = SocketAddrV4::new(Ipv4Addr::new(172, 31, 6, 1), BEACON_PORT);
+        let result = parse_beacon_response(&SAMPLE_BEACON, source);
         assert!(result.is_ok());
 
         let discovery = result.unwrap();
@@ -743,16 +744,20 @@ mod tests {
 
     #[test]
     fn test_parse_short_packet() {
-        let result = parse_beacon_response(&[0u8; 16], "172.31.6.1");
+        use std::net::{Ipv4Addr, SocketAddrV4};
+        let source = SocketAddrV4::new(Ipv4Addr::new(172, 31, 6, 1), BEACON_PORT);
+        let result = parse_beacon_response(&[0u8; 16], source);
         assert!(matches!(result, Err(ParseError::TooShort { .. })));
     }
 
     #[test]
     fn test_parse_invalid_header() {
+        use std::net::{Ipv4Addr, SocketAddrV4};
+        let source = SocketAddrV4::new(Ipv4Addr::new(172, 31, 6, 1), BEACON_PORT);
         let mut bad_packet = SAMPLE_BEACON;
         bad_packet[0] = 0xFF;
 
-        let result = parse_beacon_response(&bad_packet, "172.31.6.1");
+        let result = parse_beacon_response(&bad_packet, source);
         assert!(matches!(result, Err(ParseError::InvalidHeader { .. })));
     }
 

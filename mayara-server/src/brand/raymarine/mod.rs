@@ -467,7 +467,7 @@ pub fn create_locator(session: Session) -> Box<dyn RadarLocator + Send> {
 // New unified discovery processing (used by CoreLocatorAdapter)
 // =============================================================================
 
-use mayara_core::radar::{ParsedAddress, RadarDiscovery};
+use mayara_core::radar::RadarDiscovery;
 
 /// Process a radar discovery from the core locator.
 ///
@@ -482,11 +482,13 @@ pub fn process_discovery(
     radars: &SharedRadars,
     subsys: &SubsystemHandle,
 ) -> Result<(), io::Error> {
-    // Parse address from discovery using core's parser
-    let parsed = ParsedAddress::parse(&discovery.address)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let radar_ip = Ipv4Addr::from(parsed.ip);
-    let radar_addr = SocketAddrV4::new(radar_ip, if parsed.port > 0 { parsed.port } else { 5800 });
+    // Get address from discovery (now typed as SocketAddrV4)
+    let radar_ip = *discovery.address.ip();
+    let radar_addr = if discovery.address.port() > 0 {
+        discovery.address
+    } else {
+        SocketAddrV4::new(radar_ip, 5800)
+    };
 
     // Determine model from discovery
     let model = if let Some(ref model_name) = discovery.model {
@@ -508,10 +510,10 @@ pub fn process_discovery(
         NON_HD_PIXEL_VALUES
     };
 
-    // For simplified discovery, use basic addresses
-    let report_addr: SocketAddrV4 = SocketAddrV4::new(radar_ip, discovery.command_port);
-    let data_addr: SocketAddrV4 = SocketAddrV4::new(radar_ip, discovery.data_port);
-    let send_addr: SocketAddrV4 = SocketAddrV4::new(radar_ip, discovery.command_port);
+    // Use addresses from beacon if available, otherwise construct from IP
+    let report_addr: SocketAddrV4 = discovery.report_address.unwrap_or_else(|| SocketAddrV4::new(radar_ip, 0));
+    let data_addr: SocketAddrV4 = discovery.data_address.unwrap_or_else(|| SocketAddrV4::new(radar_ip, 0));
+    let send_addr: SocketAddrV4 = discovery.send_address.unwrap_or_else(|| SocketAddrV4::new(radar_ip, 0));
 
     let info: RadarInfo = RadarInfo::new(
         session.clone(),

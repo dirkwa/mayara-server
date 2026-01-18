@@ -130,7 +130,7 @@ impl CoreLocatorAdapter {
             );
         }
         for iface in &interfaces {
-            self.locator.add_multicast_interface(iface);
+            self.locator.add_multicast_interface(*iface);
         }
 
         // CRITICAL: Configure Furuno interface to prevent cross-NIC broadcast traffic
@@ -140,7 +140,7 @@ impl CoreLocatorAdapter {
                 "Found Furuno-capable NIC: {} - broadcasts will use this interface",
                 furuno_nic
             );
-            self.locator.set_furuno_interface(&furuno_nic.to_string());
+            self.locator.set_furuno_interface(furuno_nic);
         } else {
             log::warn!("No NIC found for Furuno subnet (172.31.x.x) - broadcasts may go to wrong interface");
         }
@@ -349,11 +349,8 @@ pub fn dispatch_discovery(
         }
     }
 
-    // Determine NIC address for this radar
-    let radar_addr = parse_address(&discovery.address);
-    let nic_addr = radar_addr
-        .map(|a| get_nic_for_radar(&a))
-        .unwrap_or(Ipv4Addr::UNSPECIFIED);
+    // Determine NIC address for this radar (address is now SocketAddrV4)
+    let nic_addr = get_nic_for_radar(&discovery.address);
 
     log::info!(
         "Processing {} discovery: {} at {} via {}",
@@ -460,7 +457,7 @@ fn find_furuno_interface(allow_wifi: bool, interface: &Option<String>) -> Option
 /// This is used to join multicast groups on all interfaces, which is
 /// critical for multi-NIC setups where the radar might be on a different
 /// interface than the OS default.
-fn find_all_interfaces(allow_wifi: bool, interface: &Option<String>) -> Vec<String> {
+fn find_all_interfaces(allow_wifi: bool, interface: &Option<String>) -> Vec<Ipv4Addr> {
     use network_interface::{NetworkInterface, NetworkInterfaceConfig};
     use std::net::IpAddr;
 
@@ -481,7 +478,7 @@ fn find_all_interfaces(allow_wifi: bool, interface: &Option<String>) -> Vec<Stri
                 if let IpAddr::V4(nic_ip) = addr.ip() {
                     if !nic_ip.is_loopback() || interface.is_some() {
                         log::debug!("Found interface {} with IP {}", itf.name, nic_ip);
-                        interfaces.push(nic_ip.to_string());
+                        interfaces.push(nic_ip);
                     }
                 }
             }

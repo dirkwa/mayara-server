@@ -30,6 +30,8 @@
 //! }
 //! ```
 
+use std::net::{Ipv4Addr, SocketAddrV4};
+
 use super::ControllerEvent;
 use crate::io::{IoProvider, TcpSocketHandle};
 use crate::protocol::furuno::command::{
@@ -70,7 +72,7 @@ pub struct FurunoController {
     /// Radar ID (for logging)
     radar_id: String,
     /// Radar IP address
-    radar_addr: String,
+    radar_addr: Ipv4Addr,
     /// Login socket (port 10000 or 10010)
     login_socket: Option<TcpSocketHandle>,
     /// Command socket (dynamic port)
@@ -142,10 +144,10 @@ impl FurunoController {
     /// Create a new controller for a Furuno radar
     ///
     /// The controller will automatically attempt to connect to get model info.
-    pub fn new(radar_id: &str, radar_addr: &str) -> Self {
+    pub fn new(radar_id: &str, radar_addr: Ipv4Addr) -> Self {
         let mut controller = Self {
             radar_id: radar_id.to_string(),
-            radar_addr: radar_addr.to_string(),
+            radar_addr,
             login_socket: None,
             command_socket: None,
             state: ControllerState::Disconnected,
@@ -537,10 +539,8 @@ impl FurunoController {
                 // Raw mode for binary login response
                 let _ = io.tcp_set_line_buffering(&socket, false);
 
-                if io
-                    .tcp_connect(&socket, &self.radar_addr, login_port)
-                    .is_ok()
-                {
+                let addr = SocketAddrV4::new(self.radar_addr, login_port);
+                if io.tcp_connect(&socket, addr).is_ok() {
                     self.login_socket = Some(socket);
                     self.state = ControllerState::LoggingIn;
                     self.login_sent = false; // Reset for new login attempt
@@ -646,10 +646,8 @@ impl FurunoController {
                 // Line buffering for text protocol
                 let _ = io.tcp_set_line_buffering(&socket, true);
 
-                if io
-                    .tcp_connect(&socket, &self.radar_addr, self.command_port)
-                    .is_ok()
-                {
+                let addr = SocketAddrV4::new(self.radar_addr, self.command_port);
+                if io.tcp_connect(&socket, addr).is_ok() {
                     self.command_socket = Some(socket);
                     self.state = ControllerState::Connecting;
                 } else {
@@ -806,7 +804,8 @@ impl FurunoController {
         match io.tcp_create() {
             Ok(socket) => {
                 let _ = io.tcp_set_line_buffering(&socket, true);
-                if io.tcp_connect(&socket, &self.radar_addr, port).is_ok() {
+                let addr = SocketAddrV4::new(self.radar_addr, port);
+                if io.tcp_connect(&socket, addr).is_ok() {
                     self.command_socket = Some(socket);
                     self.command_port = port;
                     self.state = ControllerState::TryingFallback;

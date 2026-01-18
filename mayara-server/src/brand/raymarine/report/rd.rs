@@ -463,10 +463,8 @@ pub(super) fn process_info_report(receiver: &mut RaymarineReportReceiver, data: 
         log::debug!("{}: Starting unified controller (RD)", receiver.key);
         let controller = RaymarineController::new(
             &receiver.key,
-            &receiver.info.send_command_addr.ip().to_string(),
-            receiver.info.send_command_addr.port(),
-            &receiver.info.report_addr.ip().to_string(),
-            receiver.info.report_addr.port(),
+            receiver.info.send_command_addr,
+            receiver.info.report_addr,
             RaymarineVariant::RD,
             model.doppler,
         );

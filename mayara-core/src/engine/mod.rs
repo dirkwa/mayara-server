@@ -29,6 +29,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::net::{Ipv4Addr, SocketAddrV4};
 
 use crate::arpa::{ArpaProcessor, ArpaSettings, ArpaTarget};
 use crate::controllers::{
@@ -233,7 +234,7 @@ impl RadarEngine {
     }
 
     /// Add a Furuno radar
-    pub fn add_furuno(&mut self, id: &str, addr: &str) {
+    pub fn add_furuno(&mut self, id: &str, addr: Ipv4Addr) {
         let controller = FurunoController::new(id, addr);
         let managed = ManagedRadar::new(id.to_string(), RadarController::Furuno(controller));
         self.radars.insert(id.to_string(), managed);
@@ -243,22 +244,12 @@ impl RadarEngine {
     pub fn add_navico(
         &mut self,
         id: &str,
-        command_addr: &str,
-        command_port: u16,
-        report_addr: &str,
-        report_port: u16,
-        nic_addr: &str,
+        command_addr: SocketAddrV4,
+        report_addr: SocketAddrV4,
+        nic_addr: Ipv4Addr,
         model: NavicoModel,
     ) {
-        let controller = NavicoController::new(
-            id,
-            command_addr,
-            command_port,
-            report_addr,
-            report_port,
-            nic_addr,
-            model,
-        );
+        let controller = NavicoController::new(id, command_addr, report_addr, nic_addr, model);
         let managed = ManagedRadar::new(id.to_string(), RadarController::Navico(controller));
         self.radars.insert(id.to_string(), managed);
     }
@@ -267,28 +258,18 @@ impl RadarEngine {
     pub fn add_raymarine(
         &mut self,
         id: &str,
-        command_addr: &str,
-        command_port: u16,
-        report_addr: &str,
-        report_port: u16,
+        command_addr: SocketAddrV4,
+        report_addr: SocketAddrV4,
         variant: RaymarineVariant,
         has_doppler: bool,
     ) {
-        let controller = RaymarineController::new(
-            id,
-            command_addr,
-            command_port,
-            report_addr,
-            report_port,
-            variant,
-            has_doppler,
-        );
+        let controller = RaymarineController::new(id, command_addr, report_addr, variant, has_doppler);
         let managed = ManagedRadar::new(id.to_string(), RadarController::Raymarine(controller));
         self.radars.insert(id.to_string(), managed);
     }
 
     /// Add a Garmin radar
-    pub fn add_garmin(&mut self, id: &str, addr: &str) {
+    pub fn add_garmin(&mut self, id: &str, addr: Ipv4Addr) {
         let controller = GarminController::new(id, addr);
         let managed = ManagedRadar::new(id.to_string(), RadarController::Garmin(controller));
         self.radars.insert(id.to_string(), managed);
@@ -589,6 +570,7 @@ impl RadarEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv4Addr;
 
     #[test]
     fn test_engine_creation() {
@@ -599,7 +581,7 @@ mod tests {
     #[test]
     fn test_arpa_methods() {
         let mut engine = RadarEngine::new();
-        engine.add_furuno("test-radar", "192.168.1.1");
+        engine.add_furuno("test-radar", Ipv4Addr::new(192, 168, 1, 1));
 
         // Should return empty targets for new radar
         let targets = engine.get_targets("test-radar");
@@ -613,7 +595,7 @@ mod tests {
     #[test]
     fn test_guard_zone_methods() {
         let mut engine = RadarEngine::new();
-        engine.add_furuno("test-radar", "192.168.1.1");
+        engine.add_furuno("test-radar", Ipv4Addr::new(192, 168, 1, 1));
 
         // Should return empty zones
         let zones = engine.get_guard_zones("test-radar");
@@ -636,7 +618,7 @@ mod tests {
     #[test]
     fn test_trail_methods() {
         let mut engine = RadarEngine::new();
-        engine.add_furuno("test-radar", "192.168.1.1");
+        engine.add_furuno("test-radar", Ipv4Addr::new(192, 168, 1, 1));
 
         // Should return empty trails
         let trails = engine.get_all_trails("test-radar");

@@ -62,9 +62,11 @@
 //!
 //! ```rust,no_run
 //! use mayara_core::protocol::furuno;
+//! use std::net::{Ipv4Addr, SocketAddrV4};
 //!
 //! let packet: &[u8] = &[0u8; 32]; // Real packet from network
-//! match furuno::parse_beacon_response(packet, "172.31.6.1") {
+//! let source = SocketAddrV4::new(Ipv4Addr::new(172, 31, 6, 1), 10010);
+//! match furuno::parse_beacon_response(packet, source) {
 //!     Ok(discovery) => println!("Found radar: {}", discovery.name),
 //!     Err(e) => println!("Parse error: {}", e),
 //! }
