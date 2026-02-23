@@ -114,7 +114,7 @@ enum PixelType {
     History,
 }
 
-#[derive(Clone, Debug, ToSchema)]
+#[derive(Clone, Debug)]
 struct Color {
     r: u8,
     g: u8,
@@ -144,6 +144,7 @@ impl Serialize for Color {
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct Lookup {
     r#type: PixelType,
+    #[schema(value_type = String, example = "#334455ff")]
     color: Color,
 }
 
