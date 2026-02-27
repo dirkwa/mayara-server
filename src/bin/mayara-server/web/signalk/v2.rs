@@ -282,7 +282,9 @@ async fn get_interfaces(
     log::debug!("Interface state request from {} for host '{}'", addr, host);
 
     let (tx, mut rx) = mpsc::channel(1);
-    state.tx_interface_request.send(Some(tx)).unwrap();
+    if let Err(e) = state.tx_interface_request.send(Some(tx)) {
+        return (StatusCode::BAD_REQUEST, format!("Shutdown in progress")).into_response();
+    }
     match rx.recv().await {
         Some(api) => wrap_response(Interfaces { interfaces: api }).into_response(),
         _ => Json(Vec::<String>::new()).into_response(),
