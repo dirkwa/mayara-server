@@ -256,19 +256,11 @@ impl FurunoLocator {
                 info.report_addr.set_port(port);
             }
 
-            radars.update(&mut info);
-
             let report_name = info.key();
 
             info.start_forwarding_radar_messages_to_stdout(&subsys);
 
-            if !self.args.replay {
-                let report_receiver =
-                    report::FurunoReportReceiver::new(&self.args, radars.clone(), info);
-                subsys.start(SubsystemBuilder::new(report_name, |s| {
-                    report_receiver.run(s)
-                }));
-            } else {
+            if self.args.replay {
                 let model = RadarModel::DRS4DNXT; // Default model for replay
                 let version = "01.05";
                 log::info!(
@@ -277,7 +269,14 @@ impl FurunoLocator {
                     model,
                 );
                 settings::update_when_model_known(&mut info, model, version);
+                radars.update(&mut info);
             }
+
+            let report_receiver =
+                report::FurunoReportReceiver::new(&self.args, radars.clone(), info);
+            subsys.start(SubsystemBuilder::new(report_name, |s| {
+                report_receiver.run(s)
+            }));
         }
     }
 

@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
+use tokio::io::ReadHalf;
 use tokio::net::UdpSocket;
 use tokio::net::{TcpSocket, TcpStream};
 use tokio::time::{Instant, sleep, sleep_until};
@@ -60,19 +61,24 @@ pub struct FurunoReportReceiver {
 impl FurunoReportReceiver {
     pub fn new(args: &Cli, radars: SharedRadars, info: RadarInfo) -> FurunoReportReceiver {
         let key = info.key();
-
-        let replay = args.replay;
-        let command_sender = if !replay {
-            Some(Command::new(&info))
-        } else {
+        let command_sender = if args.replay {
             None
+        } else {
+            Some(Command::new(&info))
         };
 
         let control_update_rx = info.control_update_subscribe();
 
         // let pixel_to_blob = Self::pixel_to_blob(&info.legend);
 
-        let common = CommonRadar::new(args, key, info.clone(), radars, control_update_rx, replay);
+        let common = CommonRadar::new(
+            args,
+            key,
+            info.clone(),
+            radars,
+            control_update_rx,
+            args.replay,
+        );
 
         FurunoReportReceiver {
             common,
@@ -89,6 +95,10 @@ impl FurunoReportReceiver {
     }
 
     async fn start_command_stream(&mut self) -> Result<(), RadarError> {
+        if self.command_sender.is_none() {
+            // Cannot connect to TCP in replay mode, can't send commands
+            return Ok(());
+        }
         if self.common.info.send_command_addr.port() == 0 {
             // Port not set yet, we need to login to the radar first.
             return Err(RadarError::InvalidPort);
@@ -109,14 +119,20 @@ impl FurunoReportReceiver {
     async fn data_loop(&mut self, subsys: &SubsystemHandle) -> Result<(), RadarError> {
         log::debug!("{}: listening for reports", self.common.key);
 
-        let stream = self.stream.take().unwrap();
-        let (reader, writer) = tokio::io::split(stream);
-        if let Some(ref mut cs) = self.command_sender {
-            cs.set_writer(writer);
-        }
+        let stream = self.stream.take();
+        let mut reader = {
+            if let Some(stream) = stream {
+                let (reader, writer) = tokio::io::split(stream);
+                if let Some(ref mut cs) = self.command_sender {
+                    cs.set_writer(writer);
+                }
+                Some(BufReader::new(reader))
+            } else {
+                None
+            }
+        };
         // self.common.command_sender.init(&mut writer).await?;
 
-        let mut reader = BufReader::new(reader);
         let mut line = String::new();
         let mut deadline = Instant::now() + self.report_request_interval;
         let mut first_report_received = false;
@@ -141,7 +157,7 @@ impl FurunoReportReceiver {
                     deadline = Instant::now() + self.report_request_interval;
                 },
 
-                r = reader.read_line(&mut line) => {
+                Some(r) = conditional_read(&mut reader, &mut line) => {
                     match r {
                         Ok(len) => {
                             if len > 2 {
@@ -174,7 +190,7 @@ impl FurunoReportReceiver {
                     }
                 },
 
-                Some(r) = Self::conditional_receive(&multicast_socket, &mut buf)  => {
+                Some(r) = conditional_receive(&multicast_socket, &mut buf)  => {
                     log::trace!("Furuno data multicast recv {:?}", r);
                     match r {
                         Ok((len, addr)) => {
@@ -192,7 +208,7 @@ impl FurunoReportReceiver {
                     buf.clear();
                 },
 
-                Some(r) = Self::conditional_receive(&broadcast_socket, &mut buf2)  => {
+                Some(r) = conditional_receive(&broadcast_socket, &mut buf2)  => {
                     log::trace!("Furuno data broadcast recv {:?}", r);
                     match r {
                         Ok((len, addr)) => {
@@ -218,7 +234,7 @@ impl FurunoReportReceiver {
         self.start_data_socket().await?;
         self.start_command_stream().await?;
         loop {
-            if self.stream.is_some() {
+            if self.stream.is_some() || self.common.replay {
                 match self.data_loop(&subsys).await {
                     Err(RadarError::Shutdown) => {
                         return Ok(());
@@ -230,16 +246,18 @@ impl FurunoReportReceiver {
                 self.stream = None;
             } else {
                 sleep(Duration::from_millis(1000)).await;
-                if !self.common.replay {
-                    self.login_to_radar()?;
-                    self.start_command_stream().await?;
-                }
+                self.login_to_radar()?;
+                self.start_command_stream().await?;
                 self.start_data_socket().await?;
             }
         }
     }
 
     fn login_to_radar(&mut self) -> Result<(), RadarError> {
+        if self.command_sender.is_none() {
+            return Ok(());
+        }
+
         // Furuno radars use a single TCP/IP connection to send commands and
         // receive status reports, so report_addr and send_command_addr are identical.
         // Only one of these would be enough for Furuno.
@@ -701,16 +719,6 @@ impl FurunoReportReceiver {
         Ok(())
     }
 
-    async fn conditional_receive(
-        socket: &Option<UdpSocket>,
-        buf: &mut Vec<u8>,
-    ) -> Option<io::Result<(usize, SocketAddr)>> {
-        match socket {
-            Some(s) => Some(s.recv_buf_from(buf).await),
-            None => None,
-        }
-    }
-
     #[cfg(target_os = "macos")]
     fn verify_source_address(&self, addr: &SocketAddr) -> bool {
         addr.ip() == std::net::SocketAddr::V4(self.common.info.addr).ip() || self.common.replay
@@ -893,6 +901,11 @@ impl FurunoReportReceiver {
                 .info
                 .controls
                 .set(&ControlId::Range, metadata.range as f64, None);
+            let _ = self.common.info.controls.set(
+                &ControlId::Power,
+                Power::Transmit as u32 as f64,
+                None,
+            );
         }
         // Convert the spoke data to bytes
 
@@ -994,5 +1007,25 @@ impl FurunoReportReceiver {
         );
 
         metadata
+    }
+}
+
+async fn conditional_receive(
+    socket: &Option<UdpSocket>,
+    buf: &mut Vec<u8>,
+) -> Option<io::Result<(usize, SocketAddr)>> {
+    match socket {
+        Some(s) => Some(s.recv_buf_from(buf).await),
+        None => None,
+    }
+}
+
+async fn conditional_read(
+    reader: &mut Option<BufReader<ReadHalf<TcpStream>>>,
+    line: &mut String,
+) -> Option<io::Result<usize>> {
+    match reader {
+        Some(s) => Some(s.read_line(line).await),
+        None => None,
     }
 }
