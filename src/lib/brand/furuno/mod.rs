@@ -416,6 +416,8 @@ impl FurunoLocator {
                         .trim()
                         .to_string(),
                 );
+                // Furuno radars report more spokes than they send, default to "Reduce" mode (2)
+                radar_info.controls.set_spoke_processing(2);
 
                 self.found(radar_info, radars, subsys);
             }

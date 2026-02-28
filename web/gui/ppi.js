@@ -91,12 +91,13 @@ class PPI {
     // Spoke data
     this.data = null;
     this.spokesPerRevolution = 0;
+    this.reportedSpokesPerRevolution = 0; // Original value from radar, preserved for mode switching
     this.maxspokelength = 0;
     this.legend = null;
 
     // Spoke processing strategy
     this.spokeProcessor = null;
-    this.processingMode = "auto"; // "auto", "clean", or "smoothing"
+    this.processingMode = "auto"; // "auto", "clean", "fill", "reduce", or "smooth"
 
     // Buffer flush - wait for full rotation after standby/range change
     this.waitForRotation = false;
@@ -132,6 +133,7 @@ class PPI {
    */
   setSpokes(spokesPerRevolution, maxspokelength) {
     this.spokesPerRevolution = spokesPerRevolution;
+    this.reportedSpokesPerRevolution = spokesPerRevolution; // Store original for mode switching
     this.maxspokelength = maxspokelength;
     this.data = new Uint8Array(spokesPerRevolution * maxspokelength);
 
@@ -209,6 +211,27 @@ class PPI {
 
   setProcessingMode(mode) {
     if (this.processingMode !== mode) {
+      console.log(
+        `PPI: setProcessingMode ${this.processingMode} -> ${mode}, ` +
+          `spokes: ${this.spokesPerRevolution}, reported: ${this.reportedSpokesPerRevolution}`
+      );
+
+      // If switching away from reduce mode, restore original spoke count
+      if (
+        this.spokesPerRevolution !== this.reportedSpokesPerRevolution &&
+        this.reportedSpokesPerRevolution > 0
+      ) {
+        console.log(
+          `PPI: Restoring spoke count from ${this.spokesPerRevolution} to ${this.reportedSpokesPerRevolution}`
+        );
+        this.spokesPerRevolution = this.reportedSpokesPerRevolution;
+        this.data = new Uint8Array(this.spokesPerRevolution * this.maxspokelength);
+
+        if (this.renderer && this.renderer.setSpokes) {
+          this.renderer.setSpokes(this.spokesPerRevolution, this.maxspokelength);
+        }
+      }
+
       this.processingMode = mode;
       this.#createSpokeProcessor();
       this.clearRadarDisplay();
@@ -309,6 +332,42 @@ class PPI {
       this.spokesPerRevolution,
       this.legend
     );
+
+    // Set up calibration callback for reduce processor
+    // Use setTimeout to defer resize until after current spoke processing completes
+    if (this.spokeProcessor.setCalibrationCallback) {
+      this.spokeProcessor.setCalibrationCallback((actualSpokes) => {
+        setTimeout(() => this.#resizeBufferForActualSpokes(actualSpokes), 0);
+      });
+    }
+  }
+
+  /**
+   * Resize buffer when reduce processor determines actual spoke count
+   */
+  #resizeBufferForActualSpokes(actualSpokes) {
+    console.log(`PPI: Resizing buffer from ${this.spokesPerRevolution} to ${actualSpokes} spokes`);
+
+    // Store original values for reference
+    const originalSpokes = this.spokesPerRevolution;
+
+    // Update spoke count
+    this.spokesPerRevolution = actualSpokes;
+
+    // Resize data buffer
+    this.data = new Uint8Array(actualSpokes * this.maxspokelength);
+
+    // Notify renderer of new dimensions
+    if (this.renderer && this.renderer.setSpokes) {
+      this.renderer.setSpokes(actualSpokes, this.maxspokelength);
+    }
+
+    // Clear display with new buffer
+    if (this.renderer && this.renderer.clearDisplay) {
+      this.renderer.clearDisplay(this.data, actualSpokes, this.maxspokelength);
+    }
+
+    console.log(`PPI: Buffer resized from ${originalSpokes} to ${actualSpokes} spokes`);
   }
 
   /**
@@ -337,8 +396,14 @@ class PPI {
       return;
     }
 
-    if (spoke.angle >= this.spokesPerRevolution) {
-      console.error(`Bad spoke angle: ${spoke.angle} >= ${this.spokesPerRevolution}`);
+    // Check spoke angle bounds - but reduce processor handles angle scaling internally,
+    // so it may receive angles larger than the current buffer size
+    const maxValidAngle =
+      "reportedSpokesPerRevolution" in this.spokeProcessor
+        ? this.spokeProcessor.reportedSpokesPerRevolution
+        : this.spokesPerRevolution;
+    if (spoke.angle >= maxValidAngle) {
+      console.error(`Bad spoke angle: ${spoke.angle} >= ${maxValidAngle}`);
       return;
     }
 

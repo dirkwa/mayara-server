@@ -1,10 +1,28 @@
-export { SpokeProcessorFactory };
+export { SpokeProcessorFactory, SpokeProcessingMode };
+
+/**
+ * Spoke processing modes - use these constants instead of string literals.
+ * Order matches server-side enum: 0=Clean, 1=Fill, 2=Reduce, 3=Smooth
+ */
+const SpokeProcessingMode = Object.freeze({
+  CLEAN: "clean",
+  FILL: "fill",
+  REDUCE: "reduce",
+  SMOOTH: "smooth",
+
+  // Array for index-based lookup from server values
+  fromIndex(index) {
+    const modes = [this.CLEAN, this.FILL, this.REDUCE, this.SMOOTH];
+    return modes[index] ?? this.CLEAN;
+  },
+});
 
 /**
  * Base class for spoke processing strategies
  */
 class SpokeProcessor {
-  constructor(legend) {
+  constructor(spokesPerRevolution, legend) {
+    this.spokesPerRevolution = spokesPerRevolution;
     this.legend = legend;
     this.rotationCount = 0;
     this.lastSpokeAngle = -1;
@@ -94,12 +112,243 @@ class CleanSpokeProcessor extends SpokeProcessor {
 }
 
 /**
+ * Fill processor - fills gaps between received spokes by repeating data
+ * Used when radar reports more spokes than it actually sends
+ */
+class FillSpokeProcessor extends SpokeProcessor {
+  constructor(spokesPerRevolution, legend) {
+    super(spokesPerRevolution, legend);
+    this.lastProcessedAngle = -1;
+  }
+
+  reset() {
+    super.reset();
+    this.lastProcessedAngle = -1;
+  }
+
+  processSpoke(buffer, spoke, spokesPerRevolution, maxSpokeLength) {
+    const spokeLen = spoke.data.length;
+
+    // Fill gaps by repeating spoke data for missing angles
+    if (this.lastProcessedAngle >= 0) {
+      const gap = this.#calculateGap(
+        this.lastProcessedAngle,
+        spoke.angle,
+        spokesPerRevolution
+      );
+      if (gap > 1) {
+        this.#fillGap(
+          buffer,
+          spoke,
+          this.lastProcessedAngle,
+          gap,
+          spokesPerRevolution,
+          maxSpokeLength
+        );
+      }
+    }
+    this.lastProcessedAngle = spoke.angle;
+
+    // Write the actual spoke
+    const offset = spoke.angle * maxSpokeLength;
+
+    // Bounds check
+    if (offset + spokeLen > buffer.length) {
+      console.error(
+        `Buffer overflow: offset=${offset}, data.len=${spokeLen}, buf.len=${buffer.length}`
+      );
+      return;
+    }
+
+    for (let i = 0; i < spokeLen; i++) {
+      buffer[offset + i] = spoke.data[i];
+    }
+
+    if (spokeLen < maxSpokeLength) {
+      buffer.fill(0, offset + spokeLen, offset + maxSpokeLength);
+    }
+  }
+
+  #calculateGap(lastAngle, currentAngle, spokesPerRevolution) {
+    if (currentAngle > lastAngle) {
+      return currentAngle - lastAngle;
+    } else {
+      // Wrapped around
+      return spokesPerRevolution - lastAngle + currentAngle;
+    }
+  }
+
+  #fillGap(buffer, spoke, lastAngle, gap, spokesPerRevolution, maxSpokeLength) {
+    const spokeLen = spoke.data.length;
+
+    for (let i = 1; i < gap; i++) {
+      const fillAngle = (lastAngle + i) % spokesPerRevolution;
+      const offset = fillAngle * maxSpokeLength;
+
+      if (offset + spokeLen > buffer.length) {
+        continue;
+      }
+
+      for (let j = 0; j < spokeLen; j++) {
+        buffer[offset + j] = spoke.data[j];
+      }
+
+      if (spokeLen < maxSpokeLength) {
+        buffer.fill(0, offset + spokeLen, offset + maxSpokeLength);
+      }
+    }
+  }
+}
+
+/**
+ * Reduce processor - reduces spoke count by counting actual spokes and resizing buffer
+ * Counts actual spokes during first 2 revolutions, then resizes buffer and scales angles
+ *
+ * Furuno radars report 8192 spokes but send fewer (e.g., 2048). The angles still range
+ * from 0 to ~8191 (spread across the full range), so we need to:
+ * 1. Count how many spokes are actually sent per revolution
+ * 2. Resize buffer to that count
+ * 3. Scale incoming angles to fit the reduced buffer
+ */
+class ReduceSpokeProcessor extends SpokeProcessor {
+  constructor(spokesPerRevolution, legend) {
+    super(spokesPerRevolution, legend);
+    this.calibrated = false;
+    this.calibrationRevolutions = 0;
+    this.calibrationLastAngle = -1;
+    this.revolutionCounts = [];
+    this.currentRevolutionCount = 0;
+    this.actualSpokesPerRevolution = spokesPerRevolution;
+    this.reportedSpokesPerRevolution = spokesPerRevolution;
+    this.onCalibrationComplete = null;
+  }
+
+  reset() {
+    super.reset();
+    // Don't reset calibration state - once we know the actual spoke count,
+    // it doesn't change with range changes. Only reset tracking state.
+    this.calibrationLastAngle = -1;
+    this.currentRevolutionCount = 0;
+  }
+
+  /**
+   * Full reset including calibration - use when switching processors
+   */
+  fullReset() {
+    super.reset();
+    this.calibrated = false;
+    this.calibrationRevolutions = 0;
+    this.calibrationLastAngle = -1;
+    this.revolutionCounts = [];
+    this.currentRevolutionCount = 0;
+  }
+
+  needsRotationWait() {
+    return true;
+  }
+
+  /**
+   * Set callback for when calibration completes and buffer resize is needed
+   * @param {function(number): void} callback - Called with actualSpokesPerRevolution
+   */
+  setCalibrationCallback(callback) {
+    this.onCalibrationComplete = callback;
+  }
+
+  processSpoke(buffer, spoke, spokesPerRevolution, maxSpokeLength) {
+    // Track calibration during first 2 revolutions
+    if (!this.calibrated) {
+      this.#updateCalibration(spoke.angle, spokesPerRevolution);
+      // During calibration, don't draw (wait for buffer resize)
+      return;
+    }
+
+    // After calibration, scale angle from reported range to actual buffer size
+    // e.g., if reported=8192, actual=2048, angle 4096 -> 1024
+    const scaledAngle = Math.floor(
+      (spoke.angle * this.actualSpokesPerRevolution) / this.reportedSpokesPerRevolution
+    );
+
+    if (scaledAngle >= this.actualSpokesPerRevolution) {
+      return;
+    }
+
+    const offset = scaledAngle * maxSpokeLength;
+    const spokeLen = spoke.data.length;
+
+    // Bounds check against buffer
+    if (offset + spokeLen > buffer.length) {
+      return;
+    }
+
+    for (let i = 0; i < spokeLen; i++) {
+      buffer[offset + i] = spoke.data[i];
+    }
+
+    if (spokeLen < maxSpokeLength) {
+      const endOffset = Math.min(offset + maxSpokeLength, buffer.length);
+      buffer.fill(0, offset + spokeLen, endOffset);
+    }
+  }
+
+  #updateCalibration(angle, spokesPerRevolution) {
+    // Detect revolution completion (angle wraps from high to low)
+    if (this.calibrationLastAngle >= 0) {
+      const wrapThreshold = spokesPerRevolution / 2;
+      if (this.calibrationLastAngle > wrapThreshold && angle < wrapThreshold) {
+        // Revolution completed
+        const revolutionSpokeCount = this.currentRevolutionCount;
+        this.currentRevolutionCount = 0;
+
+        this.revolutionCounts.push(revolutionSpokeCount);
+        this.calibrationRevolutions++;
+
+        console.log(
+          `Reduce processor: calibration revolution ${this.calibrationRevolutions} ` +
+            `had ${revolutionSpokeCount} spokes (reported ${spokesPerRevolution})`
+        );
+
+        // After 2 revolutions, calibrate
+        if (this.calibrationRevolutions === 2) {
+          // Use the maximum spoke count seen across revolutions
+          const actualSpokes = Math.max(...this.revolutionCounts);
+
+          this.calibrated = true;
+          this.actualSpokesPerRevolution = actualSpokes;
+          this.reportedSpokesPerRevolution = spokesPerRevolution;
+
+          console.log(
+            `Reduce processor: calibrated to ${actualSpokes} spokes per revolution ` +
+              `(reported was ${spokesPerRevolution}, ratio ${(spokesPerRevolution / actualSpokes).toFixed(2)})`
+          );
+
+          if (this.onCalibrationComplete) {
+            this.onCalibrationComplete(actualSpokes);
+          }
+        }
+      }
+    }
+
+    this.calibrationLastAngle = angle;
+    this.currentRevolutionCount++;
+  }
+
+  getActualSpokesPerRevolution() {
+    return this.actualSpokesPerRevolution;
+  }
+
+  isCalibrated() {
+    return this.calibrated;
+  }
+}
+
+/**
  * Smoothing processor - uses neighbor enhancement and filtering
  * Waits for several rotations before applying aggressive filtering
  */
 class SmoothingSpokeProcessor extends SpokeProcessor {
-  constructor(legend) {
-    super(legend);
+  constructor(spokesPerRevolution, legend) {
+    super(spokesPerRevolution, legend);
     this.fillRotations = 4; // Number of rotations to use neighbor enhancement
   }
 
@@ -204,7 +453,8 @@ class SmoothingSpokeProcessor extends SpokeProcessor {
 
         // Spread to neighboring spokes (both directions)
         for (let d = 1; d <= spreadWidth; d++) {
-          const prev = (spoke.angle + spokesPerRevolution - d) % spokesPerRevolution;
+          const prev =
+            (spoke.angle + spokesPerRevolution - d) % spokesPerRevolution;
           const next = (spoke.angle + d) % spokesPerRevolution;
           const prevOffset = prev * maxSpokeLength;
           const nextOffset = next * maxSpokeLength;
@@ -239,14 +489,26 @@ class SmoothingSpokeProcessor extends SpokeProcessor {
     // - Isolated weak signals (scatter) get killed
 
     // Wide neighbor check for strong signals: ±4 spokes
-    const prev1Offset = ((spoke.angle + spokesPerRevolution - 1) % spokesPerRevolution) * maxSpokeLength;
-    const prev2Offset = ((spoke.angle + spokesPerRevolution - 2) % spokesPerRevolution) * maxSpokeLength;
-    const prev3Offset = ((spoke.angle + spokesPerRevolution - 3) % spokesPerRevolution) * maxSpokeLength;
-    const prev4Offset = ((spoke.angle + spokesPerRevolution - 4) % spokesPerRevolution) * maxSpokeLength;
-    const next1Offset = ((spoke.angle + 1) % spokesPerRevolution) * maxSpokeLength;
-    const next2Offset = ((spoke.angle + 2) % spokesPerRevolution) * maxSpokeLength;
-    const next3Offset = ((spoke.angle + 3) % spokesPerRevolution) * maxSpokeLength;
-    const next4Offset = ((spoke.angle + 4) % spokesPerRevolution) * maxSpokeLength;
+    const prev1Offset =
+      ((spoke.angle + spokesPerRevolution - 1) % spokesPerRevolution) *
+      maxSpokeLength;
+    const prev2Offset =
+      ((spoke.angle + spokesPerRevolution - 2) % spokesPerRevolution) *
+      maxSpokeLength;
+    const prev3Offset =
+      ((spoke.angle + spokesPerRevolution - 3) % spokesPerRevolution) *
+      maxSpokeLength;
+    const prev4Offset =
+      ((spoke.angle + spokesPerRevolution - 4) % spokesPerRevolution) *
+      maxSpokeLength;
+    const next1Offset =
+      ((spoke.angle + 1) % spokesPerRevolution) * maxSpokeLength;
+    const next2Offset =
+      ((spoke.angle + 2) % spokesPerRevolution) * maxSpokeLength;
+    const next3Offset =
+      ((spoke.angle + 3) % spokesPerRevolution) * maxSpokeLength;
+    const next4Offset =
+      ((spoke.angle + 4) % spokesPerRevolution) * maxSpokeLength;
 
     for (let i = 0; i < spokeLen; i++) {
       const val = spoke.data[i];
@@ -262,8 +524,18 @@ class SmoothingSpokeProcessor extends SpokeProcessor {
       const next4 = buffer[next4Offset + i];
 
       // For strong signals: use wide sum (±4)
-      const wideSum = prev1 + prev2 + prev3 + prev4 + next1 + next2 + next3 + next4;
-      const wideMax = Math.max(prev1, prev2, prev3, prev4, next1, next2, next3, next4);
+      const wideSum =
+        prev1 + prev2 + prev3 + prev4 + next1 + next2 + next3 + next4;
+      const wideMax = Math.max(
+        prev1,
+        prev2,
+        prev3,
+        prev4,
+        next1,
+        next2,
+        next3,
+        next4
+      );
       // For weak signals: use narrow sum (±2)
       const narrowSum = prev1 + prev2 + next1 + next2;
       const narrowMax = Math.max(prev1, prev2, next1, next2);
@@ -277,13 +549,25 @@ class SmoothingSpokeProcessor extends SpokeProcessor {
           outputVal = Math.min(maxNormal, Math.floor(val * 1.35));
           // Boost immediate neighbors to fill gaps
           if (prev1 > mediumReturn)
-            buffer[prev1Offset + i] = Math.min(maxNormal, Math.floor(prev1 * 1.15));
+            buffer[prev1Offset + i] = Math.min(
+              maxNormal,
+              Math.floor(prev1 * 1.15)
+            );
           if (next1 > mediumReturn)
-            buffer[next1Offset + i] = Math.min(maxNormal, Math.floor(next1 * 1.15));
+            buffer[next1Offset + i] = Math.min(
+              maxNormal,
+              Math.floor(next1 * 1.15)
+            );
           if (prev2 > mediumReturn)
-            buffer[prev2Offset + i] = Math.min(maxNormal, Math.floor(prev2 * 1.1));
+            buffer[prev2Offset + i] = Math.min(
+              maxNormal,
+              Math.floor(prev2 * 1.1)
+            );
           if (next2 > mediumReturn)
-            buffer[next2Offset + i] = Math.min(maxNormal, Math.floor(next2 * 1.1));
+            buffer[next2Offset + i] = Math.min(
+              maxNormal,
+              Math.floor(next2 * 1.1)
+            );
         } else if (wideMax > mediumReturn) {
           // Some support - moderate boost
           outputVal = Math.min(maxNormal, Math.floor(val * 1.2));
@@ -319,7 +603,7 @@ class SmoothingSpokeProcessor extends SpokeProcessor {
         outputVal = val;
       }
 
-      buffer[offset + i] = val; // outputVal; (currently disabled in original)
+      buffer[offset + i] = outputVal;
     }
   }
 }
@@ -330,24 +614,45 @@ class SmoothingSpokeProcessor extends SpokeProcessor {
 class SpokeProcessorFactory {
   /**
    * Create a spoke processor
-   * @param {string} mode - "auto", "clean", or "smoothing"
+   * @param {string} mode - SpokeProcessingMode value or "auto"
    * @param {number} spokesPerRevolution - Number of spokes per revolution
    * @param {Object} legend - Legend with strongReturn, mediumReturn, etc.
    * @returns {SpokeProcessor}
    */
   static create(mode, spokesPerRevolution, legend) {
     if (mode === "auto") {
-      // Auto-detect: <= 2048 spokes use clean, > 2048 use smoothing
-      mode = spokesPerRevolution <= 2048 ? "clean" : "smoothing";
+      // Auto-detect: <= 2048 spokes use clean, > 2048 use smooth
+      mode =
+        spokesPerRevolution <= 2048
+          ? SpokeProcessingMode.CLEAN
+          : SpokeProcessingMode.SMOOTH;
     }
 
     switch (mode) {
-      case "clean":
-        return new CleanSpokeProcessor(legend);
-      case "smoothing":
-        return new SmoothingSpokeProcessor(legend);
+      case SpokeProcessingMode.CLEAN:
+        return new CleanSpokeProcessor(spokesPerRevolution, legend);
+      case SpokeProcessingMode.FILL:
+        return new FillSpokeProcessor(spokesPerRevolution, legend);
+      case SpokeProcessingMode.REDUCE:
+        return new ReduceSpokeProcessor(spokesPerRevolution, legend);
+      case SpokeProcessingMode.SMOOTH:
+        return new SmoothingSpokeProcessor(spokesPerRevolution, legend);
       default:
-        throw new Error(`Unknown spoke processor mode: ${mode}`);
+        console.warn(`Unknown spoke processor mode: ${mode}, using clean`);
+        return new CleanSpokeProcessor(spokesPerRevolution, legend);
     }
+  }
+
+  /**
+   * Get list of available modes in order
+   * @returns {string[]}
+   */
+  static getModes() {
+    return [
+      SpokeProcessingMode.CLEAN,
+      SpokeProcessingMode.FILL,
+      SpokeProcessingMode.REDUCE,
+      SpokeProcessingMode.SMOOTH,
+    ];
   }
 }

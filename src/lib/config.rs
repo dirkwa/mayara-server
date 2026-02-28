@@ -36,7 +36,7 @@ pub struct Radar {
     pub id: usize,
     pub user_name: String,
     #[serde(default)]
-    pub spoke_processing: i32, // 0 = Clean, 1 = Smoothing
+    pub spoke_processing: i32, // 0 = Clean, 1 = Fill, 2 = Reduce, 3 = Smooth
     #[serde(default = "default_range_units")]
     pub range_units: i32, // 0 = Nautical, 1 = Metric, 2 = Mixed
 

@@ -518,7 +518,7 @@ impl Controls {
             .read_only(false)
             .build(&mut controls);
 
-        new_list(ControlId::SpokeProcessing, &["Clean", "Smoothing"]).build(&mut controls);
+        new_list(ControlId::SpokeProcessing, &["Clean", "Fill", "Reduce", "Smooth"]).build(&mut controls);
 
         if args.targets != TargetMode::None {
             new_map(

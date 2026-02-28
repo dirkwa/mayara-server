@@ -161,10 +161,14 @@ class WebGPURenderer {
       return;
     }
 
+    console.log(
+      `WebGPU: setSpokes ${this.spokesPerRevolution}x${this.maxspokelength} -> ${spokesPerRevolution}x${maxspokelength}`
+    );
+
     this.spokesPerRevolution = spokesPerRevolution;
     this.maxspokelength = maxspokelength;
 
-    // Create polar data texture
+    // Create polar data texture with new dimensions
     this.polarTexture = this.device.createTexture({
       size: [maxspokelength, spokesPerRevolution],
       format: "r8unorm",
@@ -172,6 +176,7 @@ class WebGPURenderer {
     });
 
     this.#createBindGroup();
+    this.#updateUniforms();
   }
 
   /**

@@ -34,6 +34,7 @@ import {
   isPlaybackRadar,
 } from "./api.js";
 import { setZoneEditMode, setSectorEditMode } from "./viewer.js";
+import { SpokeProcessingMode } from "./spoke_processor.js";
 
 const { div, label, input, button, select, option, span } = van.tags;
 
@@ -994,14 +995,9 @@ function setControlValue(cv) {
         i.style.display = display;
       }
 
-      // Special handling for Spoke Processing control - update renderer
-      if (cv.id === "spokeProcessing") {
-        const rendererModule = window.renderer;
-        if (rendererModule && rendererModule.setProcessingMode) {
-          // Map server values (0=Clean, 1=Smoothing) to renderer modes
-          const mode = cv.value === 0 ? "clean" : "smoothing";
-          rendererModule.setProcessingMode(mode);
-        }
+      // Special handling for Spoke Processing control - update PPI
+      if (cv.id === "spokeProcessing" && window.ppi?.setProcessingMode) {
+        window.ppi.setProcessingMode(SpokeProcessingMode.fromIndex(cv.value));
       }
 
       // Handle allowed/disallowed state
