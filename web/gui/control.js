@@ -10,6 +10,7 @@ export {
   loadRadar,
   registerRadarCallback,
   registerControlCallback,
+  registerStreamMessageCallback,
   setCurrentRange,
   getPowerState,
   getControl,
@@ -44,6 +45,7 @@ let myr_capabilities = null;
 let stateWebSocket = null;
 let radarCallbacks = [];
 let controlCallbacks = [];
+let streamMessageCallbacks = [];
 let playbackMode = false;
 
 // Control state (from v1)
@@ -67,6 +69,10 @@ function registerRadarCallback(callback) {
 
 function registerControlCallback(callback) {
   controlCallbacks.push(callback);
+}
+
+function registerStreamMessageCallback(callback) {
+  streamMessageCallbacks.push(callback);
 }
 
 // Called from viewer.js when spoke data contains range
@@ -1211,6 +1217,10 @@ function connectStateStream(streamUrl, radarIdParam) {
                 const cv = { ...item.value, id: controlId };
                 setControlValue(cv);
               }
+              // Notify stream message callbacks for all values (targets, etc.)
+              streamMessageCallbacks.forEach((cb) => {
+                cb(item.path, item.value);
+              });
             }
           }
         }
@@ -1223,10 +1233,14 @@ function connectStateStream(streamUrl, radarIdParam) {
               path: `radars.${radarIdParam}.controls.*`,
               policy: "instant",
             },
+            {
+              path: `radars.${radarIdParam}.targets.*`,
+              policy: "instant",
+            },
           ],
         };
 
-        console.log("Subscribing to radar controls:", subscription);
+        console.log("Subscribing to radar controls and targets:", subscription);
         stateWebSocket.send(JSON.stringify(subscription));
       }
     } catch (err) {

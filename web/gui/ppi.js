@@ -126,6 +126,9 @@ class PPI {
 
     // Drag handlers bound state
     this._dragHandlersInstalled = false;
+
+    // ARPA targets: Map of targetId -> target data
+    this.targets = new Map();
   }
 
   /**
@@ -270,6 +273,25 @@ class PPI {
 
     this.#updatePointerEvents();
     this.redrawCanvas();
+  }
+
+  /**
+   * Update or add an ARPA target
+   * @param {number} id - Target ID
+   * @param {object} data - Target data from server (ArpaTargetApi format)
+   */
+  updateTarget(id, data) {
+    this.targets.set(id, data);
+    this.#drawOverlay();
+  }
+
+  /**
+   * Remove an ARPA target (target lost)
+   * @param {number} id - Target ID
+   */
+  removeTarget(id) {
+    this.targets.delete(id);
+    this.#drawOverlay();
   }
 
   setLegend(legend) {
@@ -557,6 +579,9 @@ class PPI {
       this.#drawSectorDragHandles(ctx, sector);
     }
 
+    // Draw ARPA targets
+    this.#drawTargets(ctx, range);
+
     // Draw standby overlay
     if (this.powerMode !== "transmit") {
       this.#drawStandbyOverlay(ctx);
@@ -627,8 +652,9 @@ class PPI {
     const radius = this.beam_length * 3;
     if (radius <= 0) return;
 
-    const startAngle = sector.startAngle - Math.PI / 2;
-    const endAngle = sector.endAngle - Math.PI / 2;
+    // Apply heading rotation for north-up mode
+    const startAngle = sector.startAngle - Math.PI / 2 - this.headingRotation;
+    const endAngle = sector.endAngle - Math.PI / 2 - this.headingRotation;
     const isCircle = Math.abs(sector.endAngle - sector.startAngle) < 0.001;
 
     ctx.beginPath();
@@ -659,8 +685,9 @@ class PPI {
 
     if (outerRadius <= 0) return;
 
-    const startAngle = zone.startAngle - Math.PI / 2;
-    const endAngle = zone.endAngle - Math.PI / 2;
+    // Apply heading rotation for north-up mode
+    const startAngle = zone.startAngle - Math.PI / 2 - this.headingRotation;
+    const endAngle = zone.endAngle - Math.PI / 2 - this.headingRotation;
     const isCircle = Math.abs(zone.endAngle - zone.startAngle) < 0.001;
 
     ctx.beginPath();
@@ -706,6 +733,152 @@ class PPI {
         ctx.fillText(text, labelX + 5, labelY - 5);
       }
     }
+  }
+
+  #drawTargets(ctx, range) {
+    if (!range || range <= 0 || this.targets.size === 0) return;
+
+    const pixelsPerMeter = this.beam_length / range;
+
+    for (const [id, target] of this.targets) {
+      this.#drawTarget(ctx, id, target, pixelsPerMeter);
+    }
+  }
+
+  #drawTarget(ctx, id, target, pixelsPerMeter) {
+    if (!target.position) return;
+
+    // Calculate screen position from bearing and distance
+    const bearingRad = (target.position.bearing * Math.PI) / 180;
+    const distance = target.position.distance;
+    const pixelDist = distance * pixelsPerMeter;
+
+    // Apply heading rotation if in north-up mode
+    const adjustedBearing = bearingRad - this.headingRotation;
+
+    // Convert polar to cartesian (bearing is clockwise from north)
+    const x = this.center_x + pixelDist * Math.sin(adjustedBearing);
+    const y = this.center_y - pixelDist * Math.cos(adjustedBearing);
+
+    // Determine color based on status
+    let color;
+    let fillColor;
+    switch (target.status) {
+      case "tracking":
+        color = "#00ff00"; // Green for active tracking
+        fillColor = "rgba(0, 255, 0, 0.3)";
+        break;
+      case "acquiring":
+        color = "#ffff00"; // Yellow for acquiring
+        fillColor = "rgba(255, 255, 0, 0.3)";
+        break;
+      case "lost":
+        color = "#ff0000"; // Red for lost
+        fillColor = "rgba(255, 0, 0, 0.3)";
+        break;
+      default:
+        color = "#ffffff"; // White for unknown
+        fillColor = "rgba(255, 255, 255, 0.3)";
+    }
+
+    ctx.save();
+
+    // Draw target symbol (circle with crosshairs)
+    const targetRadius = 12;
+
+    // Filled circle
+    ctx.beginPath();
+    ctx.arc(x, y, targetRadius, 0, 2 * Math.PI);
+    ctx.fillStyle = fillColor;
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Crosshairs
+    ctx.beginPath();
+    ctx.moveTo(x - targetRadius - 4, y);
+    ctx.lineTo(x + targetRadius + 4, y);
+    ctx.moveTo(x, y - targetRadius - 4);
+    ctx.lineTo(x, y + targetRadius + 4);
+    ctx.stroke();
+
+    // Draw velocity vector if we have motion data
+    if (target.motion && target.status === "tracking") {
+      const courseRad = (target.motion.course * Math.PI) / 180 - this.headingRotation;
+      const speed = target.motion.speed; // m/s
+
+      // Scale vector length: 1 minute of travel
+      const vectorLength = speed * 60 * pixelsPerMeter;
+      const maxVectorLength = 100; // Cap at 100 pixels
+      const scaledLength = Math.min(vectorLength, maxVectorLength);
+
+      if (scaledLength > 5) {
+        const vx = x + scaledLength * Math.sin(courseRad);
+        const vy = y - scaledLength * Math.cos(courseRad);
+
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(vx, vy);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Arrowhead
+        const arrowSize = 6;
+        const arrowAngle = Math.atan2(vy - y, vx - x);
+        ctx.beginPath();
+        ctx.moveTo(vx, vy);
+        ctx.lineTo(
+          vx - arrowSize * Math.cos(arrowAngle - Math.PI / 6),
+          vy - arrowSize * Math.sin(arrowAngle - Math.PI / 6)
+        );
+        ctx.moveTo(vx, vy);
+        ctx.lineTo(
+          vx - arrowSize * Math.cos(arrowAngle + Math.PI / 6),
+          vy - arrowSize * Math.sin(arrowAngle + Math.PI / 6)
+        );
+        ctx.stroke();
+      }
+    }
+
+    // Draw target ID label
+    ctx.fillStyle = color;
+    ctx.font = "bold 11px/1 Verdana, Geneva, sans-serif";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillText(`T${id}`, x + targetRadius + 4, y - targetRadius);
+
+    // Draw CPA/TCPA info if available and target is tracking
+    if (target.danger && target.status === "tracking") {
+      const cpa = target.danger.cpa;
+      const tcpa = target.danger.tcpa;
+
+      ctx.font = "10px/1 Verdana, Geneva, sans-serif";
+
+      // Format CPA (in meters or nm)
+      let cpaText;
+      if (cpa >= 1852) {
+        cpaText = `CPA: ${(cpa / 1852).toFixed(2)} nm`;
+      } else {
+        cpaText = `CPA: ${Math.round(cpa)} m`;
+      }
+
+      // Format TCPA (in minutes:seconds)
+      let tcpaText;
+      if (tcpa > 0) {
+        const minutes = Math.floor(tcpa / 60);
+        const seconds = Math.round(tcpa % 60);
+        tcpaText = `TCPA: ${minutes}:${seconds.toString().padStart(2, "0")}`;
+      } else {
+        tcpaText = "TCPA: --:--";
+      }
+
+      ctx.fillText(cpaText, x + targetRadius + 4, y - targetRadius + 13);
+      ctx.fillText(tcpaText, x + targetRadius + 4, y - targetRadius + 24);
+    }
+
+    ctx.restore();
   }
 
   #drawCompassRose(ctx) {

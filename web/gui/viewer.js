@@ -10,6 +10,7 @@ import {
   getControl,
   registerRadarCallback,
   registerControlCallback,
+  registerStreamMessageCallback,
   getOperatingTime,
   getUserName,
   togglePower,
@@ -35,9 +36,13 @@ var renderMethod = "webgpu";  // "webgpu" or "webgl"
 // Heading mode: "headingUp" or "northUp"
 var headingMode = "headingUp";
 var trueHeading = 0; // in radians
+var lastHeadingTime = 0; // Timestamp of last heading update
+var headingTimeoutId = null; // Timer for heading timeout
+const HEADING_TIMEOUT_MS = 5000; // Revert to HU after 5 seconds without heading
 
 registerRadarCallback(radarLoaded);
 registerControlCallback(controlUpdate);
+registerStreamMessageCallback(handleStreamMessage);
 
 window.onload = async function () {
   const urlParams = new URLSearchParams(window.location.search);
@@ -153,6 +158,7 @@ function subscribeToHeading() {
             for (const value of update.values) {
               if (value.path === "navigation.headingTrue") {
                 trueHeading = value.value; // Already in radians
+                onHeadingReceived();
                 updateHeadingDisplay();
               }
             }
@@ -192,11 +198,16 @@ function createHeadingModeToggle() {
 
   const toggleBtn = document.createElement("div");
   toggleBtn.id = "myr_heading_toggle";
-  toggleBtn.className = "myr_heading_toggle";
+  toggleBtn.className = "myr_heading_toggle myr_heading_disabled";
   toggleBtn.innerHTML = "H Up";
-  toggleBtn.title = "Click to toggle: Heading Up / North Up";
+  toggleBtn.title = "Heading data required for North Up mode";
 
   toggleBtn.addEventListener("click", () => {
+    // Don't allow switching if disabled (no heading data)
+    if (toggleBtn.classList.contains("myr_heading_disabled")) {
+      return;
+    }
+
     if (headingMode === "headingUp") {
       headingMode = "northUp";
       toggleBtn.innerHTML = "N Up";
@@ -214,6 +225,46 @@ function createHeadingModeToggle() {
   });
 
   container.appendChild(toggleBtn);
+}
+
+// Called when heading data is received
+function onHeadingReceived() {
+  lastHeadingTime = Date.now();
+
+  // Enable the heading toggle button
+  const toggleBtn = document.getElementById("myr_heading_toggle");
+  if (toggleBtn) {
+    toggleBtn.classList.remove("myr_heading_disabled");
+    toggleBtn.title = "Click to toggle: Heading Up / North Up";
+  }
+
+  // Clear existing timeout and set a new one
+  if (headingTimeoutId) {
+    clearTimeout(headingTimeoutId);
+  }
+  headingTimeoutId = setTimeout(onHeadingTimeout, HEADING_TIMEOUT_MS);
+}
+
+// Called when heading data times out (not received for 5 seconds)
+function onHeadingTimeout() {
+  headingTimeoutId = null;
+
+  // Revert to heading-up mode
+  if (headingMode !== "headingUp") {
+    headingMode = "headingUp";
+    updateHeadingDisplay(headingMode);
+    if (ppi) {
+      ppi.redrawCanvas();
+    }
+  }
+
+  // Disable the toggle button
+  const toggleBtn = document.getElementById("myr_heading_toggle");
+  if (toggleBtn) {
+    toggleBtn.classList.add("myr_heading_disabled");
+    toggleBtn.innerHTML = "H Up";
+    toggleBtn.title = "Heading data required for North Up mode";
+  }
 }
 
 // Create the power lozenge on the viewer
@@ -554,6 +605,26 @@ function controlUpdate(controlId, value) {
       const range = typeof value === "object" ? value.value : value;
       ppi.setRange(range);
       updateRangeDisplay();
+    }
+  }
+}
+
+// Handle stream messages (targets, navigation, etc.)
+function handleStreamMessage(path, value) {
+  // Handle target updates: radars.{id}.targets.{targetId}
+  if (path.includes(".targets.")) {
+    const parts = path.split(".");
+    if (parts.length >= 4 && parts[2] === "targets") {
+      const targetId = parseInt(parts[3]);
+      if (ppi) {
+        if (value === null) {
+          // Target lost
+          ppi.removeTarget(targetId);
+        } else {
+          // Target update
+          ppi.updateTarget(targetId, value);
+        }
+      }
     }
   }
 }

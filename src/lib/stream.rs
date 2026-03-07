@@ -54,17 +54,28 @@ impl SignalKDelta {
     // Every time we send a SignalKDelta, we check for unsent meta data
     //
     pub fn add_meta_from_updates(&mut self, radars: &SharedRadars, meta_sent: &mut Vec<String>) {
-        let mut meta = false;
+        let mut needs_meta = false;
         for update in &self.updates {
             for dv in &update.values {
-                let radar_id = dv.path().split('.').nth(1).unwrap();
-                if meta_sent.iter().any(|x| x == radar_id) {
-                    meta = true;
-                    break;
+                // Only check radar control paths (radars.{id}.controls.*)
+                // Skip navigation and target paths
+                let path = dv.path();
+                if !path.starts_with("radars.") || !path.contains(".controls.") {
+                    continue;
+                }
+                if let Some(radar_id) = path.split('.').nth(1) {
+                    if !meta_sent.iter().any(|x| x == radar_id) {
+                        // Found a radar whose meta hasn't been sent yet
+                        needs_meta = true;
+                        break;
+                    }
                 }
             }
+            if needs_meta {
+                break;
+            }
         }
-        if !meta {
+        if needs_meta {
             self.add_meta_updates(radars, meta_sent);
         }
     }
@@ -99,10 +110,10 @@ impl SignalKDelta {
     }
 
     /// Add a navigation update to the delta message.
-    pub fn add_navigation_update(&mut self, path: &str, value: f64) {
+    pub fn add_navigation_update(&mut self, path: &str, value: f64, source: &str) {
         let delta_update = DeltaUpdate {
             timestamp: Some(Utc::now()),
-            source: Some(PACKAGE.to_string()),
+            source: Some(source.to_string()),
             meta: Vec::new(),
             values: vec![DeltaValue::Navigation {
                 path: path.to_string(),
@@ -176,7 +187,6 @@ enum DeltaValue {
         #[schema(example = "radars.nav1034A.controls.gain")]
         path: String,
         /// The control value
-        #[serde(flatten)]
         value: BareControlValue,
     },
     /// Target update (acquired, updated, or lost)

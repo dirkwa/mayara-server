@@ -295,7 +295,7 @@ impl SharedTargetManager {
         let mut transfers: Vec<(usize, String)> = Vec::new();
 
         for (target_id, managed) in &state.targets {
-            if managed.target.m_status == TargetStatus::LOST {
+            if managed.target.m_status == TargetStatus::Lost {
                 continue;
             }
 
@@ -336,7 +336,7 @@ impl SharedTargetManager {
         let mut closest: Option<(usize, f64)> = None;
 
         for (id, managed) in &state.targets {
-            if managed.target.m_status == TargetStatus::LOST {
+            if managed.target.m_status == TargetStatus::Lost {
                 continue;
             }
 
@@ -376,7 +376,7 @@ impl SharedTargetManager {
         let mut state = self.inner.write().unwrap();
         state
             .targets
-            .retain(|_, managed| managed.target.m_status != TargetStatus::LOST);
+            .retain(|_, managed| managed.target.m_status != TargetStatus::Lost);
         // Reset refresh state for all remaining targets so they can be refreshed next cycle
         for managed in state.targets.values_mut() {
             managed.target.m_refreshed = RefreshState::NotFound;
@@ -439,7 +439,8 @@ impl SharedTargetManager {
             std::collections::HashMap::new();
 
         for (id, managed) in &state.targets {
-            if managed.target.m_status != TargetStatus::LOST {
+            // Only include targets that should be broadcast (ACQUIRE3 or ACTIVE)
+            if managed.target.should_broadcast() {
                 result
                     .entry(managed.tracking_radar.clone())
                     .or_default()

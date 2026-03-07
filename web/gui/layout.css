@@ -94,6 +94,19 @@ div.myr_ppi {
   transform: scale(0.95);
 }
 
+.myr_heading_toggle.myr_heading_disabled {
+  background: rgba(50, 50, 50, 0.6);
+  color: #666666;
+  border-color: #666666;
+  cursor: not-allowed;
+}
+
+.myr_heading_toggle.myr_heading_disabled:hover {
+  background: rgba(50, 50, 50, 0.6);
+  color: #666666;
+  border-color: #666666;
+}
+
 /* ============================================
    Power Lozenge - Status indicator on viewer
    ============================================ */

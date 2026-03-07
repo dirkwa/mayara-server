@@ -78,7 +78,7 @@ pub struct TargetDangerApi {
     pub tcpa: f64,
 }
 
-const MIN_BLOB_PIXELS: usize = 6; // minimum number of pixels for a valid blob
+const MIN_BLOB_PIXELS: usize = 10; // minimum number of pixels for a valid blob
 const MAX_BLOB_PIXELS: usize = 10000; // maximum blob size (radar interference protection)
 const MAX_LOST_COUNT: i32 = 12; // number of sweeps that target can be missed before it is set to lost
 const MAX_DETECTION_SPEED_KN: f64 = 40.;
@@ -273,9 +273,9 @@ pub(crate) enum TargetStatus {
     Acquire0,    // Under acquisition, first seen, no contour yet
     Acquire1,    // Under acquisition, first contour found
     Acquire2,    // Under acquisition, speed and course known
-    ACQUIRE3,    // Under acquisition, speed and course known, next time active
-    ACTIVE,      // Active target
-    LOST,        // Lost target
+    Acquire3,    // Under acquisition, speed and course known, next time active
+    Active,      // Active target
+    Lost,        // Lost target
     ForDeletion, // Target to be deleted
 }
 
@@ -1160,6 +1160,10 @@ impl TargetBuffer {
 
     /// Broadcast a target update to connected SignalK clients
     fn broadcast_target_update(&self, target: &ArpaTarget, radar_position: &GeoPosition) {
+        // Don't broadcast early acquiring states
+        if !target.should_broadcast() {
+            return;
+        }
         if let Some(ref tx) = self.sk_client_tx {
             let target_api = target.to_api(radar_position);
             let mut delta = crate::stream::SignalKDelta::new();
@@ -1260,7 +1264,7 @@ impl TargetBuffer {
         let mut best_id = None;
         let mut min_dist = 1000.;
         for (id, target) in self.targets.read().unwrap().iter() {
-            if target.m_status != TargetStatus::LOST {
+            if target.m_status != TargetStatus::Lost {
                 let dif_lat = pos.lat - target.position.pos.lat;
                 let dif_lon = (pos.lon - target.position.pos.lon) * pos.lat.to_radians().cos();
                 let dist2 = dif_lat * dif_lat + dif_lon * dif_lon;
@@ -1351,7 +1355,7 @@ impl TargetBuffer {
         self.targets
             .write()
             .unwrap()
-            .retain(|_, t| t.m_status != TargetStatus::LOST);
+            .retain(|_, t| t.m_status != TargetStatus::Lost);
         for (_, v) in self.targets.write().unwrap().iter_mut() {
             v.m_refreshed = RefreshState::NotFound;
         }
@@ -1513,7 +1517,7 @@ impl TargetBuffer {
                 Err(e) => match e {
                     Error::Lost => {
                         log::info!("Target {} lost", target.m_target_id);
-                        target.m_status = TargetStatus::LOST;
+                        target.m_status = TargetStatus::Lost;
                     }
                     _ => {
                         log::debug!("Target {} refresh error {:?}", target.m_target_id, e);
@@ -1523,7 +1527,7 @@ impl TargetBuffer {
         }
 
         // Broadcast target state to SignalK clients
-        if target.m_status == TargetStatus::LOST {
+        if target.m_status == TargetStatus::Lost {
             self.broadcast_target_lost(target_id);
         } else {
             self.broadcast_target_update(&target, &target.m_radar_pos);
@@ -2349,7 +2353,7 @@ impl ArpaTarget {
     ) -> Result<Self, Error> {
         // refresh may be called from guard directly, better check
         let own_pos = crate::navdata::get_radar_position();
-        if target.m_status == TargetStatus::LOST
+        if target.m_status == TargetStatus::Lost
             || target.m_refreshed == RefreshState::OutOfScope
             || own_pos.is_none()
         {
@@ -2556,8 +2560,8 @@ impl ArpaTarget {
                 target.m_status = match target.m_status {
                     TargetStatus::Acquire0 => TargetStatus::Acquire1,
                     TargetStatus::Acquire1 => TargetStatus::Acquire2,
-                    TargetStatus::Acquire2 => TargetStatus::ACQUIRE3,
-                    TargetStatus::ACQUIRE3 | TargetStatus::ACTIVE => TargetStatus::ACTIVE,
+                    TargetStatus::Acquire2 => TargetStatus::Acquire3,
+                    TargetStatus::Acquire3 | TargetStatus::Active => TargetStatus::Active,
                     _ => TargetStatus::Acquire0,
                 };
                 if target.m_status == TargetStatus::Acquire0 {
@@ -2579,7 +2583,7 @@ impl ArpaTarget {
 
                 // Kalman filter to  calculate the apostriori local position and speed based on found position (pol)
                 if target.m_status == TargetStatus::Acquire2
-                    || target.m_status == TargetStatus::ACQUIRE3
+                    || target.m_status == TargetStatus::Acquire3
                 {
                     target.m_kalman.update_p();
                     target.m_kalman.set_measurement(
@@ -3152,7 +3156,7 @@ impl ArpaTarget {
         self.m_previous_contour_length = 0;
         self.m_lost_count = 0;
         self.m_kalman.reset_filter();
-        self.m_status = TargetStatus::LOST;
+        self.m_status = TargetStatus::Lost;
         self.m_automatic = false;
         self.m_refresh_time = 0;
         self.m_course = 0.;
@@ -3160,6 +3164,16 @@ impl ArpaTarget {
         self.position.dlat_dt = 0.;
         self.position.dlon_dt = 0.;
         self.position.speed_kn = 0.;
+    }
+
+    /// Check if this target should be broadcast to clients
+    /// Returns false for early acquiring states (Acquire0, Acquire1, Acquire2)
+    /// and for LOST targets
+    pub fn should_broadcast(&self) -> bool {
+        matches!(
+            self.m_status,
+            TargetStatus::Acquire3 | TargetStatus::Active
+        )
     }
 
     /// Convert internal ArpaTarget to Signal K API format for streaming
@@ -3189,12 +3203,10 @@ impl ArpaTarget {
         ArpaTargetApi {
             id: self.m_target_id,
             status: match self.m_status {
-                TargetStatus::ACTIVE => "tracking".to_string(),
-                TargetStatus::Acquire0
-                | TargetStatus::Acquire1
-                | TargetStatus::Acquire2
-                | TargetStatus::ACQUIRE3 => "acquiring".to_string(),
-                TargetStatus::LOST => "lost".to_string(),
+                TargetStatus::Active => "tracking".to_string(),
+                TargetStatus::Acquire3 => "acquiring".to_string(),
+                TargetStatus::Lost => "lost".to_string(),
+                // Acquire0, Acquire1, Acquire2 are early acquisition stages - not yet ready to show
                 _ => "unknown".to_string(),
             },
             position: TargetPositionApi {

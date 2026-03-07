@@ -42,10 +42,10 @@ pub fn init_nav_broadcast(tx: tokio::sync::broadcast::Sender<SignalKDelta>) {
 }
 
 /// Broadcast a navigation update to subscribed clients
-fn broadcast_nav_update(path: &str, value: f64) {
+fn broadcast_nav_update(path: &str, value: f64, source: &str) {
     if let Some(tx) = NAV_BROADCAST_TX.get() {
         let mut delta = SignalKDelta::new();
-        delta.add_navigation_update(path, value);
+        delta.add_navigation_update(path, value, source);
         // Ignore send errors (no subscribers)
         let _ = tx.send(delta);
     }
@@ -65,12 +65,12 @@ pub(crate) fn get_heading_true() -> Option<f64> {
 ///
 /// Set the heading in radians [0..2*PI>
 ///
-pub(crate) fn set_heading_true(heading: Option<f64>) {
+pub(crate) fn set_heading_true(heading: Option<f64>, source: &str) {
     if let Some(h) = heading {
         let old = HEADING_TRUE.swap(h, Ordering::AcqRel);
         // Only broadcast if value changed significantly (> 0.001 rad ~ 0.06 deg)
         if (old - h).abs() > 0.001 || old.is_nan() {
-            broadcast_nav_update("navigation.headingTrue", h);
+            broadcast_nav_update("navigation.headingTrue", h, source);
         }
     } else {
         HEADING_TRUE.store(f64::NAN, Ordering::Release);
@@ -582,7 +582,7 @@ impl NavigationData {
                 set_position(gll.latitude, gll.longitude);
             }
             Ok(ParsedMessage::Hdt(hdt)) => {
-                set_heading_true(hdt.heading_true);
+                set_heading_true(hdt.heading_true, "nmea0183");
             }
             Ok(ParsedMessage::Vtg(vtg)) => {
                 set_cog(vtg.cog_true);
@@ -619,6 +619,13 @@ fn parse_signalk(s: &str) -> Result<(), RadarError> {
         Ok(v) => {
             log::trace!("parse_signalk: parsed JSON successfully");
             let updates = &v["updates"][0];
+            // Extract source from upstream SignalK message
+            // Try $source first (more specific), then source, fall back to "signalk"
+            let source = updates["$source"]
+                .as_str()
+                .or_else(|| updates["source"]["label"].as_str())
+                .or_else(|| updates["source"]["type"].as_str())
+                .unwrap_or("signalk");
             let values = &updates["values"][0];
             {
                 log::trace!("parse_signalk: values = {:?}", values);
@@ -636,7 +643,7 @@ fn parse_signalk(s: &str) -> Result<(), RadarError> {
                             return Ok(());
                         }
                         "navigation.headingTrue" => {
-                            set_heading_true(value.as_f64());
+                            set_heading_true(value.as_f64(), source);
                             return Ok(());
                         }
                         "navigation.speedOverGround" => {
