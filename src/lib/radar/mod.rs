@@ -451,8 +451,52 @@ impl SharedRadars {
                 info: HashMap::new(),
                 persistent_data: Persistence::new(),
                 sk_client_tx,
+                target_manager: None,
             })),
         }
+    }
+
+    /// Get or create the shared target manager for dual radar support
+    pub(crate) fn get_target_manager(&self) -> target::manager::SharedTargetManager {
+        let mut radars = self.radars.write().unwrap();
+        if radars.target_manager.is_none() {
+            radars.target_manager = Some(target::manager::SharedTargetManager::new());
+        }
+        radars.target_manager.clone().unwrap()
+    }
+
+    /// Check if dual radar mode is active (2+ transmitting radars with ranges)
+    pub fn is_dual_radar_active(&self) -> bool {
+        let radars = self.radars.read().unwrap();
+        radars
+            .info
+            .values()
+            .filter(|i| !i.ranges.is_empty())
+            .count()
+            >= 2
+    }
+
+    /// Get radar keys sorted by range (short to long)
+    /// Returns (short_range_key, long_range_key) if both are available
+    pub fn get_radar_by_range(&self) -> (Option<String>, Option<String>) {
+        let radars = self.radars.read().unwrap();
+        let mut sorted: Vec<_> = radars
+            .info
+            .values()
+            .filter(|i| !i.ranges.is_empty())
+            .collect();
+
+        // Sort by max range (last range in the list)
+        sorted.sort_by_key(|i| i.ranges.all.last().map(|r| r.distance()).unwrap_or(0));
+
+        let short = sorted.first().map(|i| i.key.clone());
+        let long = if sorted.len() >= 2 {
+            sorted.last().map(|i| i.key.clone())
+        } else {
+            None
+        };
+
+        (short, long)
     }
 
     // A radar has been found
@@ -611,6 +655,7 @@ struct Radars {
     pub info: HashMap<String, RadarInfo>,
     pub persistent_data: Persistence,
     sk_client_tx: tokio::sync::broadcast::Sender<SignalKDelta>,
+    pub target_manager: Option<target::manager::SharedTargetManager>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -854,7 +899,14 @@ impl CommonRadar {
         control_update_rx: broadcast::Receiver<ControlUpdate>,
         replay: bool,
     ) -> Self {
-        let trails = TrailBuffer::new(args, &info);
+        // Get shared target manager for dual radar support
+        let shared_target_manager = if args.targets == TargetMode::Arpa {
+            Some(radars.get_target_manager())
+        } else {
+            None
+        };
+
+        let trails = TrailBuffer::new(args, &info, shared_target_manager);
         let spoke_message = None;
 
         let common = CommonRadar {
@@ -910,7 +962,7 @@ impl CommonRadar {
             ControlDestination::Internal | ControlDestination::ReadOnly => {
                 panic!("{:?} should not be sent to radar receiver", cv)
             }
-            ControlDestination::Trail => {
+            ControlDestination::Trail | ControlDestination::Target => {
                 match self.trails.set_control_value(&self.info.controls, &cv) {
                     Ok(()) => {
                         return Ok(());
@@ -924,7 +976,6 @@ impl CommonRadar {
                     }
                 };
             }
-            ControlDestination::Target => {}
             ControlDestination::Command => {
                 if let Some(command_sender) = command_sender {
                     if let Err(e) = command_sender.set_control(&cv, &self.info.controls).await {
@@ -969,7 +1020,7 @@ impl CommonRadar {
             );
             self.spoke_count += 1;
             self.max_spoke_length = max(self.max_spoke_length, spoke.data.len() as u32);
-            self.trails.update_trails(&mut spoke, &self.info.legend); // Add any pixels representing the trails
+            self.trails.update_trails(&mut spoke, &self.info.legend, &self.info.controls); // Add any pixels representing the trails
             message.spokes.push(spoke);
 
             if angle < self.prev_angle {

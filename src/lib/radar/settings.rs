@@ -88,6 +88,7 @@ pub enum ControlId {
     // Client Only, not here: Symbology,
     DopplerAutoTrack,
     ClearTargets,
+    MergeTargets,
     GuardZone1,
     GuardZone2,
     TargetTrails,
@@ -183,8 +184,11 @@ impl ControlId {
             | ControlId::Rain
             | ControlId::Doppler
             | ControlId::DopplerMode => Category::Base,
-            ControlId::DopplerAutoTrack | ControlId::ClearTargets => Category::Targets,
-            ControlId::GuardZone1 | ControlId::GuardZone2 => Category::GuardZones,
+            ControlId::DopplerAutoTrack
+            | ControlId::ClearTargets
+            | ControlId::MergeTargets
+            | ControlId::GuardZone1
+            | ControlId::GuardZone2 => Category::Targets,
             ControlId::DopplerTrailsOnly
             | ControlId::TargetTrails
             | ControlId::ClearTrails
@@ -242,6 +246,9 @@ impl ControlId {
             ControlId::DopplerMode => "For what type of targets Doppler is used",
             ControlId::DopplerAutoTrack => {
                 "Convert all Doppler targets to ARPA targets automatically"
+            }
+            ControlId::MergeTargets => {
+                "Merge targets from multiple radars into a single shared target list"
             }
             ControlId::DopplerSpeedThreshold => "Threshold speed above which Doppler is applied",
             ControlId::DopplerTrailsOnly => "Convert only Doppler targets to target trails",
@@ -306,6 +313,7 @@ impl ControlId {
             ControlId::BearingAlignment => "Bearing alignment",
             // ControlId::ColorGain => "Color gain",
             ControlId::ClearTargets => "Clear targets",
+            ControlId::MergeTargets => "Merge targets",
             ControlId::ClearTrails => "Clear trails",
             ControlId::ColorGain => "Color gain",
             ControlId::DisplayTiming => "Display timing",
@@ -382,8 +390,9 @@ impl ControlId {
             ControlId::Range => ControlDestination::Command,
             ControlId::Mode => ControlDestination::Command,
             ControlId::Gain => ControlDestination::Command,
-            ControlId::GuardZone1 => ControlDestination::Internal,
-            ControlId::GuardZone2 => ControlDestination::Internal,
+            ControlId::GuardZone1 => ControlDestination::Target,
+            ControlId::GuardZone2 => ControlDestination::Target,
+            ControlId::MergeTargets => ControlDestination::Target,
             ControlId::Sea => ControlDestination::Command,
             ControlId::SeaState => ControlDestination::Command,
             ControlId::Rain => ControlDestination::Command,
@@ -2784,7 +2793,6 @@ impl ControlDefinition {
 pub enum Category {
     Base,
     Targets,
-    GuardZones,
     Trails,
     Advanced,
     Installation,

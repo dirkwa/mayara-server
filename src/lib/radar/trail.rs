@@ -3,6 +3,7 @@ use ndarray::{Array2, s};
 
 mod cartesian;
 use super::settings::{ControlError, ControlId, ControlValue, SharedControls};
+use super::target::manager::{RadarTargetConfig, SharedTargetManager};
 use super::target::TargetBuffer;
 use super::{RadarError, RadarInfo};
 use crate::protos::RadarMessage::radar_message::Spoke;
@@ -40,10 +41,20 @@ pub(crate) struct TrailBuffer {
     previous_range: u32,
     pixels_per_meter: f64,
     have_heading: bool,
+    /// Whether position was available on last spoke (for tracking state changes)
+    had_position: bool,
+    /// Shared target manager for dual radar support
+    shared_target_manager: Option<SharedTargetManager>,
+    /// Key identifying this radar for target management
+    radar_key: String,
 }
 
 impl TrailBuffer {
-    pub fn new(args: &Cli, info: &RadarInfo) -> Self {
+    pub fn new(
+        args: &Cli,
+        info: &RadarInfo,
+        shared_target_manager: Option<SharedTargetManager>,
+    ) -> Self {
         let spokes_per_revolution = info.spokes_per_revolution as usize;
         let max_spoke_len = info.max_spoke_len as usize;
         let trail_size: i16 = (info.max_spoke_len as i16 * 2 + MARGIN_I16 * 2) as i16;
@@ -53,10 +64,36 @@ impl TrailBuffer {
         );
 
         let target_mode = args.targets.clone();
-        let targets = match target_mode {
-            TargetMode::Arpa => Some(TargetBuffer::new(args.stationary, info)),
+        let mut targets = match target_mode {
+            TargetMode::Arpa => Some(TargetBuffer::new(
+                args.stationary,
+                info,
+                shared_target_manager.clone(),
+            )),
             _ => None,
         };
+
+        // Load initial guard zone settings from persisted config
+        if let Some(ref mut target_buffer) = targets {
+            for (zone_index, control_id) in
+                [(0, ControlId::GuardZone1), (1, ControlId::GuardZone2)]
+            {
+                if let Some(zone) = info.controls.guard_zone(&control_id) {
+                    log::info!(
+                        "Loading guard zone {} from config: angles {:.3}rad - {:.3}rad, distances {:.0}m - {:.0}m, enabled: {}",
+                        zone_index, zone.start_angle, zone.end_angle, zone.start_distance, zone.end_distance, zone.enabled
+                    );
+                    target_buffer.set_guard_zone(
+                        zone_index,
+                        zone.start_angle,
+                        zone.end_angle,
+                        zone.start_distance,
+                        zone.end_distance,
+                        zone.enabled,
+                    );
+                }
+            }
+        }
 
         let legend = info.get_legend();
         let mut minimal_legend_value = 0;
@@ -66,6 +103,8 @@ impl TrailBuffer {
                 minimal_legend_value = Self::compute_minimal_legend_value(&legend, value);
             }
         }
+
+        let radar_key = info.key();
 
         TrailBuffer {
             target_mode,
@@ -91,6 +130,9 @@ impl TrailBuffer {
             previous_range: 0,
             pixels_per_meter: 0.0,
             have_heading: false,
+            had_position: false,
+            shared_target_manager,
+            radar_key,
         }
     }
 
@@ -132,6 +174,27 @@ impl TrailBuffer {
                 self.targets.as_mut().map(|t| t.delete_all_targets());
                 return Ok(());
             }
+            ControlId::MergeTargets => {
+                let merge_enabled = cv.as_bool()?;
+                // Clear all targets when toggling merge mode
+                self.targets.as_mut().map(|t| t.delete_all_targets());
+
+                // Store the value
+                let v = cv.as_value()?;
+                let r = controls.set_value(&cv.id, v.clone());
+
+                // Note: Guard zone synchronization across radars needs to be handled
+                // at a higher level (SharedRadars) when MergeTargets is enabled,
+                // as it requires coordination between multiple radar instances.
+                // The SharedTargetManager will handle the actual target merging.
+
+                log::info!(
+                    "MergeTargets {} - targets cleared",
+                    if merge_enabled { "enabled" } else { "disabled" }
+                );
+
+                return r.map(|_| ()).map_err(|e| RadarError::ControlError(e));
+            }
             ControlId::DopplerAutoTrack => {
                 let arpa = cv.as_bool()?;
                 if let Some(ref mut targets) = self.targets {
@@ -143,6 +206,52 @@ impl TrailBuffer {
                 } else {
                     Err(RadarError::CannotSetControlId(cv.id))
                 }
+            }
+            ControlId::GuardZone1 | ControlId::GuardZone2 => {
+                // Extract zone values from the control value
+                let start_angle = cv.value.as_ref().and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let end_angle = cv.end_value.unwrap_or(0.0);
+                let start_distance = cv.start_distance.unwrap_or(0.0);
+                let end_distance = cv.end_distance.unwrap_or(0.0);
+                let enabled = cv.enabled;
+
+                log::info!(
+                    "TrailBuffer: Setting guard zone {:?}: angles {:.1}° - {:.1}°, distances {:.0}m - {:.0}m, enabled: {:?}",
+                    cv.id, start_angle, end_angle, start_distance, end_distance, enabled
+                );
+
+                // Set the zone in the controls (this persists the config)
+                let r = controls.set_zone(
+                    &cv.id,
+                    start_angle,
+                    end_angle,
+                    start_distance,
+                    end_distance,
+                    enabled,
+                );
+
+                if r.is_ok() {
+                    // Update the target buffer with the new guard zone settings
+                    // Use the values from controls.guard_zone() which are in SI units (radians, meters)
+                    if let Some(zone) = controls.guard_zone(&cv.id) {
+                        let zone_index = if cv.id == ControlId::GuardZone1 { 0 } else { 1 };
+                        log::info!(
+                            "TrailBuffer: Updating target buffer guard zone {}: angles {:.3}rad - {:.3}rad, distances {:.0}m - {:.0}m, enabled: {}",
+                            zone_index, zone.start_angle, zone.end_angle, zone.start_distance, zone.end_distance, zone.enabled
+                        );
+                        if let Some(ref mut targets) = self.targets {
+                            targets.set_guard_zone(
+                                zone_index,
+                                zone.start_angle,
+                                zone.end_angle,
+                                zone.start_distance,
+                                zone.end_distance,
+                                zone.enabled,
+                            );
+                        }
+                    }
+                }
+                return r.map(|_| ()).map_err(|e| RadarError::ControlError(e));
             }
             _ => Err(RadarError::CannotSetControlId(cv.id)),
         };
@@ -201,16 +310,43 @@ impl TrailBuffer {
         self.targets.as_mut().map(|t| t.set_rotation_speed(ms));
     }
 
-    pub fn update_trails(&mut self, spoke: &mut Spoke, legend: &Legend) {
+    pub fn update_trails(&mut self, spoke: &mut Spoke, legend: &Legend, controls: &SharedControls) {
         if self.target_mode == TargetMode::None {
             return;
         }
+
+        // Track position availability and update Target controls allowed state
+        let has_position = spoke.lat.is_some() && spoke.lon.is_some();
+        if has_position != self.had_position {
+            self.had_position = has_position;
+            // Update allowed state for all Target destination controls
+            const TARGET_CONTROLS: [ControlId; 5] = [
+                ControlId::ClearTargets,
+                ControlId::GuardZone1,
+                ControlId::GuardZone2,
+                ControlId::MergeTargets,
+                ControlId::DopplerAutoTrack,
+            ];
+            for control_id in &TARGET_CONTROLS {
+                controls.set_allowed(control_id, has_position);
+            }
+            if has_position {
+                log::info!("Position now available - enabling Target controls");
+            } else {
+                log::info!("Position lost - disabling Target controls");
+            }
+        }
+
         if spoke.range != self.previous_range && spoke.range != 0 {
             if self.previous_range != 0 {
                 let zoom_factor = self.previous_range as f64 / spoke.range as f64;
                 self.zoom_relative_trails(zoom_factor);
             }
             self.previous_range = spoke.range;
+            self.pixels_per_meter = spoke.data.len() as f64 / spoke.range as f64;
+
+            // Update shared target manager with new radar config
+            self.update_shared_target_manager_config(spoke);
         }
 
         if let Some(bearing) = spoke.bearing {
@@ -225,6 +361,54 @@ impl TrailBuffer {
         self.targets
             .as_mut()
             .map(|t| t.process_spoke(spoke, legend));
+
+        // In dual radar mode, periodically evaluate if targets should be transferred
+        // to a better radar (one with smaller range that can still see the target)
+        if let Some(ref manager) = self.shared_target_manager {
+            if manager.is_dual_radar_active() {
+                manager.evaluate_radar_transfers();
+            }
+        }
+    }
+
+    /// Update the shared target manager with this radar's current configuration
+    fn update_shared_target_manager_config(&self, spoke: &Spoke) {
+        if let Some(ref manager) = self.shared_target_manager {
+            // Get radar position from spoke if available
+            let position = if let (Some(lat), Some(lon)) = (spoke.lat, spoke.lon) {
+                GeoPosition { lat, lon }
+            } else {
+                // No position available yet
+                return;
+            };
+
+            let config = RadarTargetConfig {
+                key: self.radar_key.clone(),
+                range_meters: spoke.range,
+                pixels_per_meter: self.pixels_per_meter,
+                spokes_per_revolution: self.spokes_per_revolution as i32,
+                position,
+                transmitting: true, // If we're receiving spokes, we're transmitting
+            };
+
+            // Register or update the radar config
+            if manager.radar_count() == 0
+                || manager
+                    .get_radars_by_range()
+                    .iter()
+                    .any(|k| k == &self.radar_key)
+            {
+                manager.update_radar_config(config.clone());
+            }
+            // If this radar isn't registered yet, register it
+            if !manager
+                .get_radars_by_range()
+                .iter()
+                .any(|k| k == &self.radar_key)
+            {
+                manager.register_radar(config);
+            }
+        }
     }
 
     fn update_true_trails(&mut self, range: u32, bearing: SpokeBearing, data: &mut Vec<u8>) {

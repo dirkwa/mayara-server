@@ -18,6 +18,7 @@ use crate::{navdata, protos::RadarMessage::radar_message::Spoke, radar::NAUTICAL
 
 mod arpa;
 mod kalman;
+pub(crate) mod manager;
 
 const MIN_CONTOUR_LENGTH: usize = 6;
 const MAX_CONTOUR_LENGTH: usize = 2000; // defines maximal size of target contour in pixels
@@ -30,6 +31,128 @@ pub const MS_TO_KN: f64 = 3600. / NAUTICAL_MILE_F64;
 
 const TODO_ROTATION_SPEED_MS: i32 = 2500;
 const TODO_TARGET_AGE_TO_MIXER: u32 = 5;
+const MAX_NUMBER_OF_TARGETS: usize = 100;
+
+/// Guard zone configuration for target detection
+/// Angles are stored in spokes (radar units), distances in pixels
+#[derive(Debug, Clone)]
+pub(crate) struct DetectionGuardZone {
+    /// Start angle in spokes (0..spokes_per_revolution)
+    start_angle: i32,
+    /// End angle in spokes (0..spokes_per_revolution)
+    end_angle: i32,
+    /// Inner distance in pixels
+    inner_range: i32,
+    /// Outer distance in pixels
+    outer_range: i32,
+    /// Whether this guard zone is enabled for detection
+    enabled: bool,
+    /// Last scan time for each angle to avoid duplicate detections
+    last_scan_time: Vec<u64>,
+    // Original config values (for recalculation when pixels_per_meter changes)
+    config_start_angle_rad: f64,
+    config_end_angle_rad: f64,
+    config_inner_range_m: f64,
+    config_outer_range_m: f64,
+    config_enabled: bool,
+}
+
+impl DetectionGuardZone {
+    fn new(spokes_per_revolution: i32) -> Self {
+        Self {
+            start_angle: 0,
+            end_angle: 0,
+            inner_range: 0,
+            outer_range: 0,
+            enabled: false,
+            last_scan_time: vec![0; spokes_per_revolution as usize],
+            config_start_angle_rad: 0.0,
+            config_end_angle_rad: 0.0,
+            config_inner_range_m: 0.0,
+            config_outer_range_m: 0.0,
+            config_enabled: false,
+        }
+    }
+
+    /// Update zone from config (angles in radians, distances in meters)
+    fn update_from_config(
+        &mut self,
+        start_angle_rad: f64,
+        end_angle_rad: f64,
+        inner_range_m: f64,
+        outer_range_m: f64,
+        enabled: bool,
+        spokes_per_revolution: i32,
+        pixels_per_meter: f64,
+    ) {
+        // Store original config values for later recalculation
+        self.config_start_angle_rad = start_angle_rad;
+        self.config_end_angle_rad = end_angle_rad;
+        self.config_inner_range_m = inner_range_m;
+        self.config_outer_range_m = outer_range_m;
+        self.config_enabled = enabled;
+
+        self.recalculate(spokes_per_revolution, pixels_per_meter);
+    }
+
+    /// Recalculate pixel/spoke values from stored config when pixels_per_meter changes
+    fn recalculate(&mut self, spokes_per_revolution: i32, pixels_per_meter: f64) {
+        self.enabled = self.config_enabled && pixels_per_meter > 0.0;
+
+        if !self.enabled {
+            return;
+        }
+
+        // Convert angles from radians to spokes
+        let spokes_f64 = spokes_per_revolution as f64;
+        self.start_angle = ((self.config_start_angle_rad / (2.0 * PI) * spokes_f64) as i32)
+            .rem_euclid(spokes_per_revolution);
+        self.end_angle = ((self.config_end_angle_rad / (2.0 * PI) * spokes_f64) as i32)
+            .rem_euclid(spokes_per_revolution);
+
+        // Convert distances from meters to pixels
+        self.inner_range = (self.config_inner_range_m * pixels_per_meter).max(1.0) as i32;
+        self.outer_range = (self.config_outer_range_m * pixels_per_meter) as i32;
+
+        log::info!(
+            "GuardZone configured: angles={}..{} spokes, range={}..{} pixels (ppm={})",
+            self.start_angle,
+            self.end_angle,
+            self.inner_range,
+            self.outer_range,
+            pixels_per_meter
+        );
+    }
+
+    /// Check if this zone has config that needs recalculation
+    fn has_pending_config(&self) -> bool {
+        self.config_enabled && !self.enabled
+    }
+
+    /// Check if an angle (in spokes) is within this guard zone
+    fn contains_angle(&self, angle: i32, spokes_per_revolution: i32) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        let angle = angle.rem_euclid(spokes_per_revolution);
+        if self.start_angle <= self.end_angle {
+            angle >= self.start_angle && angle <= self.end_angle
+        } else {
+            // Zone wraps around 0
+            angle >= self.start_angle || angle <= self.end_angle
+        }
+    }
+
+    /// Check if a range (in pixels) is within this guard zone
+    fn contains_range(&self, range: i32) -> bool {
+        self.enabled && range >= self.inner_range && range <= self.outer_range
+    }
+
+    /// Check if a position is within the guard zone
+    fn contains(&self, angle: i32, range: i32, spokes_per_revolution: i32) -> bool {
+        self.contains_angle(angle, spokes_per_revolution) && self.contains_range(range)
+    }
+}
 
 ///
 /// The length of a degree longitude varies by the latitude,
@@ -42,17 +165,17 @@ pub fn meters_per_degree_longitude(lat: &f64) -> f64 {
 }
 
 #[derive(Debug, Clone)]
-struct ExtendedPosition {
-    pos: GeoPosition,
-    dlat_dt: f64, // m / sec
-    dlon_dt: f64, // m / sec
-    time: u64,    // millis
-    speed_kn: f64,
-    sd_speed_kn: f64, // standard deviation of the speed in knots
+pub(crate) struct ExtendedPosition {
+    pub(crate) pos: GeoPosition,
+    pub(crate) dlat_dt: f64, // m / sec
+    pub(crate) dlon_dt: f64, // m / sec
+    pub(crate) time: u64,    // millis
+    pub(crate) speed_kn: f64,
+    pub(crate) sd_speed_kn: f64, // standard deviation of the speed in knots
 }
 
 impl ExtendedPosition {
-    fn new(
+    pub(crate) fn new(
         pos: GeoPosition,
         dlat_dt: f64,
         dlon_dt: f64,
@@ -83,7 +206,7 @@ enum Pass {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum TargetStatus {
+pub(crate) enum TargetStatus {
     Acquire0,    // Under acquisition, first seen, no contour yet
     Acquire1,    // Under acquisition, first contour found
     Acquire2,    // Under acquisition, speed and course known
@@ -94,7 +217,7 @@ enum TargetStatus {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum RefreshState {
+pub(crate) enum RefreshState {
     NotFound,
     Found,
     OutOfScope,
@@ -132,7 +255,7 @@ ANY_DOPPLER -> APPROACHING or RECEDING
 
 */
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Doppler {
+pub(crate) enum Doppler {
     Any,            // any target above threshold
     NoDoppler,      // a target without a Doppler bit
     Approaching,    // Doppler approaching
@@ -228,6 +351,17 @@ pub struct TargetBuffer {
     scanned_angle: i32,
     // and we scan for new targets at <n + 3/4 * spokes_per_revolution> (SCAN_FOR_NEW_PERCENTAGE)
     refreshed_angle: i32,
+
+    /// Shared target manager for dual radar coordination (None for single radar)
+    shared_manager: Option<manager::SharedTargetManager>,
+    /// Key identifying this radar
+    radar_key: String,
+
+    /// Guard zones for target detection
+    guard_zones: [DetectionGuardZone; 2],
+
+    /// Previous angle for detecting revolution completion
+    prev_angle: usize,
 }
 
 const REFRESH_START_PERCENTAGE: i32 = 25;
@@ -289,8 +423,8 @@ impl Sector {
 }
 
 #[derive(Debug, Clone)]
-struct ArpaTarget {
-    m_status: TargetStatus,
+pub(crate) struct ArpaTarget {
+    pub(crate) m_status: TargetStatus,
 
     m_average_contour_length: i32,
     m_small_fast: bool,
@@ -302,18 +436,22 @@ struct ArpaTarget {
     m_course: f64,
     m_stationary: i32,
     m_doppler_target: Doppler,
-    pub m_refreshed: RefreshState,
-    m_target_id: usize,
-    m_transferred_target: bool,
+    pub(crate) m_refreshed: RefreshState,
+    pub(crate) m_target_id: usize,
+    pub(crate) m_transferred_target: bool,
     m_kalman: KalmanFilter,
     contour: Contour,
     m_total_pix: u32,
     m_approaching_pix: u32,
     m_receding_pix: u32,
     have_doppler: bool,
-    pub position: ExtendedPosition,
+    pub(crate) position: ExtendedPosition,
     expected: Polar,
-    pub age_rotations: u32,
+    pub(crate) age_rotations: u32,
+    /// Key of the radar that originally acquired this target
+    pub(crate) source_radar: String,
+    /// Key of the radar currently tracking this target
+    pub(crate) tracking_radar: String,
 }
 
 impl HistorySpoke {
@@ -351,14 +489,15 @@ impl HistorySpokes {
     }
 
     pub fn mod_spokes(&self, angle: i32) -> usize {
-        (angle as usize + self.spokes.len()) % self.spokes.len()
+        angle.rem_euclid(self.spokes.len() as i32) as usize
     }
 
     pub fn pix(&self, doppler: &Doppler, ang: i32, rad: i32) -> bool {
-        let rad = rad as usize;
-        if rad >= self.spokes[0].sweep.len() || rad < 3 {
+        // Check bounds before casting to usize (negative rad would overflow)
+        if rad < 3 || rad as usize >= self.spokes[0].sweep.len() {
             return false;
         }
+        let rad = rad as usize;
         let angle = self.mod_spokes(ang);
         if let Some(layer) = &self.stationary_layer {
             if layer[[angle, rad]] != 0 {
@@ -427,13 +566,17 @@ impl HistorySpokes {
             index
         };
         let mut index = (index + 1) % 4; // determines starting direction
-        found = false;
 
         while current.r != start.r || current.angle != start.angle || count == 0 {
+            // Safeguard against infinite loops
+            if count > MAX_CONTOUR_LENGTH {
+                return false;
+            }
             // try all translations to find the next point
             // start with the "left most" translation relative to the
             // previous one
             index = (index + 3) % 4; // we will turn left all the time if possible
+            found = false; // Reset found at start of each iteration
             for _ in 0..4 {
                 if self.pix(
                     doppler,
@@ -739,8 +882,13 @@ impl HistorySpokes {
 
         // Draw the contour in the history. This is copied to the output data
         // on the next sweep.
+        let sweep_len = self.spokes[0].sweep.len();
         for p in &contour.contour {
-            self.spokes[p.angle as usize].sweep[p.r as usize].insert(HistoryPixel::CONTOUR);
+            // Normalize angle (can be negative due to contour tracing) and check r bounds
+            if p.r >= 0 && (p.r as usize) < sweep_len {
+                let angle = self.mod_spokes(p.angle);
+                self.spokes[angle].sweep[p.r as usize].insert(HistoryPixel::CONTOUR);
+            }
         }
     }
 }
@@ -779,7 +927,7 @@ impl TargetSetup {
     }
 
     pub fn mod_spokes(&self, angle: i32) -> i32 {
-        (angle + self.spokes_per_revolution) % self.spokes_per_revolution
+        angle.rem_euclid(self.spokes_per_revolution)
     }
 
     /// Number of sweeps that a next scan of the target may have moved, 1/10th of circle
@@ -789,9 +937,14 @@ impl TargetSetup {
 }
 
 impl TargetBuffer {
-    pub fn new(stationary: bool, info: &RadarInfo) -> Self {
+    pub(crate) fn new(
+        stationary: bool,
+        info: &RadarInfo,
+        shared_manager: Option<manager::SharedTargetManager>,
+    ) -> Self {
         let spokes_per_revolution = info.spokes_per_revolution as i32;
         let spoke_len = info.max_spoke_len as i32;
+        let radar_key = info.key();
 
         TargetBuffer {
             setup: TargetSetup {
@@ -819,7 +972,52 @@ impl TargetBuffer {
 
             scanned_angle: -1,
             refreshed_angle: -1,
+
+            shared_manager,
+            radar_key,
+
+            guard_zones: [
+                DetectionGuardZone::new(spokes_per_revolution),
+                DetectionGuardZone::new(spokes_per_revolution),
+            ],
+
+            prev_angle: 0,
         }
+    }
+
+    /// Update guard zone configuration from settings
+    pub fn set_guard_zone(
+        &mut self,
+        zone_index: usize,
+        start_angle_rad: f64,
+        end_angle_rad: f64,
+        inner_range_m: f64,
+        outer_range_m: f64,
+        enabled: bool,
+    ) {
+        if zone_index < 2 {
+            self.guard_zones[zone_index].update_from_config(
+                start_angle_rad,
+                end_angle_rad,
+                inner_range_m,
+                outer_range_m,
+                enabled,
+                self.setup.spokes_per_revolution,
+                self.setup.pixels_per_meter,
+            );
+        }
+    }
+
+    /// Check if any guard zone is enabled
+    fn has_active_guard_zone(&self) -> bool {
+        self.guard_zones.iter().any(|z| z.enabled)
+    }
+
+    /// Check if a position is within any enabled guard zone
+    fn is_in_guard_zone(&self, angle: i32, range: i32) -> bool {
+        self.guard_zones
+            .iter()
+            .any(|z| z.contains(angle, range, self.setup.spokes_per_revolution))
     }
 
     pub fn set_rotation_speed(&mut self, ms: u32) {
@@ -885,15 +1083,26 @@ impl TargetBuffer {
         self.acquire_or_delete_marpa_target(target_pos, TargetStatus::Acquire0);
     }
 
-    /// Delete the target that is closest to the position   
+    /// Delete the target that is closest to the position
     fn delete_target(&mut self, pos: &GeoPosition) {
-        if let Some(id) = self.find_target_id_by_position(pos) {
-            self.targets.write().unwrap().remove(&id);
+        // In dual radar mode, use shared manager
+        if let Some(ref manager) = self.shared_manager {
+            if manager.delete_target_near(pos).is_none() {
+                log::debug!(
+                    "Could not find (M)ARPA target to delete within 1000 meters from {}",
+                    pos
+                );
+            }
         } else {
-            log::debug!(
-                "Could not find (M)ARPA target to delete within 1000 meters from {}",
-                pos
-            );
+            // Single radar mode - use local storage
+            if let Some(id) = self.find_target_id_by_position(pos) {
+                self.targets.write().unwrap().remove(&id);
+            } else {
+                log::debug!(
+                    "Could not find (M)ARPA target to delete within 1000 meters from {}",
+                    pos
+                );
+            }
         }
     }
 
@@ -911,20 +1120,39 @@ impl TargetBuffer {
 
         log::debug!("Adding (M)ARPA target at {}", target_pos.pos);
 
-        let id = self.get_next_target_id();
-        let target = ArpaTarget::new(
-            target_pos,
-            GeoPosition::new(0., 0.),
-            id,
-            self.setup.spokes_per_revolution as usize,
-            status,
-            self.setup.have_doppler,
-        );
-        self.targets.write().unwrap().insert(id, target);
+        // In dual radar mode, use shared manager for target storage
+        if let Some(ref manager) = self.shared_manager {
+            manager.acquire_target(
+                &self.radar_key,
+                target_pos,
+                Doppler::Any,
+                self.setup.spokes_per_revolution as usize,
+                self.setup.have_doppler,
+            );
+        } else {
+            // Single radar mode - use local storage
+            let id = self.get_next_target_id();
+            let mut target = ArpaTarget::new(
+                target_pos,
+                GeoPosition::new(0., 0.),
+                id,
+                self.setup.spokes_per_revolution as usize,
+                status,
+                self.setup.have_doppler,
+            );
+            target.source_radar = self.radar_key.clone();
+            target.tracking_radar = self.radar_key.clone();
+            self.targets.write().unwrap().insert(id, target);
+        }
     }
 
     fn cleanup_lost_targets(&mut self) {
-        // remove targets with status LOST
+        // In dual radar mode, cleanup via shared manager
+        if let Some(ref manager) = self.shared_manager {
+            manager.cleanup_lost_targets();
+        }
+
+        // Also cleanup local targets
         self.targets
             .write()
             .unwrap()
@@ -941,7 +1169,6 @@ impl TargetBuffer {
         if self.setup.pixels_per_meter == 0. {
             return;
         }
-        log::debug!("refresh_all_arpa_targets({}, {})", start_angle, end_angle);
         self.cleanup_lost_targets();
 
         // main target refresh loop
@@ -952,11 +1179,56 @@ impl TargetBuffer {
         let speed = MAX_DETECTION_SPEED_KN * KN_TO_MS; // m/sec
         let search_radius =
             (speed * TODO_ROTATION_SPEED_MS as f64 * self.setup.pixels_per_meter / 1000.) as i32;
-        log::debug!(
-            "refresh_all_arpa_targets with search radius={}, pix/m={}",
-            search_radius,
-            self.setup.pixels_per_meter
-        );
+
+        // In dual radar mode, get targets assigned to this radar from shared manager
+        if let Some(ref manager) = self.shared_manager {
+            let targets_for_radar = manager.get_targets_for_radar(&self.radar_key);
+            for (target_id, target) in targets_for_radar {
+                self.refresh_single_target(
+                    target_id,
+                    target,
+                    start_angle,
+                    end_angle,
+                    search_radius,
+                );
+            }
+        } else {
+            // Single radar mode - use local storage
+            let target_ids: Vec<usize> = self.targets.read().unwrap().keys().cloned().collect();
+            for target_id in target_ids {
+                let target = {
+                    let targets = self.targets.read().unwrap();
+                    match targets.get(&target_id) {
+                        Some(t) => t.clone(),
+                        None => continue,
+                    }
+                };
+                self.refresh_single_target(
+                    target_id,
+                    target,
+                    start_angle,
+                    end_angle,
+                    search_radius,
+                );
+            }
+        }
+    }
+
+    fn refresh_single_target(
+        &mut self,
+        target_id: usize,
+        mut target: ArpaTarget,
+        start_angle: i32,
+        end_angle: i32,
+        search_radius: i32,
+    ) {
+        if !target
+            .contour
+            .position
+            .angle_is_between(start_angle, end_angle)
+        {
+            return;
+        }
 
         for pass in Pass::iter() {
             let radius = match pass {
@@ -965,46 +1237,50 @@ impl TargetBuffer {
                 Pass::Third => search_radius,
             };
 
-            for (_id, target) in self.targets.write().unwrap().iter_mut() {
-                if !target
-                    .contour
-                    .position
-                    .angle_is_between(start_angle, end_angle)
-                {
-                    continue;
-                }
-                if pass == Pass::First
-                    && !((target.position.speed_kn >= 2.5
-                        && target.age_rotations >= TODO_TARGET_AGE_TO_MIXER)
-                        || self.m_auto_learn_state >= 1)
-                {
-                    continue;
-                }
-                let clone = target.clone();
-                match ArpaTarget::refresh_target(
-                    clone,
-                    &self.setup,
-                    &mut self.history,
-                    radius / 4,
-                    pass,
-                ) {
-                    Ok(t) => *target = t,
-                    Err(e) => {
-                        match e {
-                            Error::Lost => {
-                                // Delete the target
-                            }
-                            _ => {
-                                log::debug!("Target {} refresh error {:?}", target.m_target_id, e);
-                            }
+            if pass == Pass::First
+                && !((target.position.speed_kn >= 2.5
+                    && target.age_rotations >= TODO_TARGET_AGE_TO_MIXER)
+                    || self.m_auto_learn_state >= 1)
+            {
+                continue;
+            }
+
+            let clone = target.clone();
+            match ArpaTarget::refresh_target(
+                clone,
+                &self.setup,
+                &mut self.history,
+                radius / 4,
+                pass,
+            ) {
+                Ok(t) => target = t,
+                Err(e) => {
+                    match e {
+                        Error::Lost => {
+                            // Mark target as lost - will be cleaned up later
+                        }
+                        _ => {
+                            log::debug!("Target {} refresh error {:?}", target.m_target_id, e);
                         }
                     }
                 }
             }
         }
+
+        // Update the target back to storage
+        if let Some(ref manager) = self.shared_manager {
+            manager.update_target(target_id, target, self.history.spokes[0].time);
+        } else {
+            self.targets.write().unwrap().insert(target_id, target);
+        }
     }
 
     pub fn delete_all_targets(&mut self) {
+        // In dual radar mode, use shared manager
+        if let Some(ref manager) = self.shared_manager {
+            manager.delete_all_targets();
+        }
+        // Always clear local storage too
         self.targets.write().unwrap().clear();
     }
 
@@ -1254,11 +1530,11 @@ impl TargetBuffer {
         status: TargetStatus,
         doppler: &Doppler,
     ) {
-        let epos = ExtendedPosition::new(own_pos, 0., 0., time, 0., 0.);
+        let epos = ExtendedPosition::new(own_pos.clone(), 0., 0., time, 0., 0.);
         let epos = self.setup.polar2pos(&pol, &epos);
         let uid = self.get_next_target_id();
 
-        let target = ArpaTarget::new(
+        let mut target = ArpaTarget::new(
             epos,
             own_pos,
             uid,
@@ -1266,13 +1542,190 @@ impl TargetBuffer {
             status,
             *doppler == Doppler::AnyDoppler,
         );
-        //target->RefreshTarget(TARGET_SEARCH_RADIUS1, 1);
+
+        // Do an initial refresh to find and draw the contour
+        let speed = MAX_DETECTION_SPEED_KN * KN_TO_MS; // m/sec
+        let search_radius =
+            (speed * TODO_ROTATION_SPEED_MS as f64 * self.setup.pixels_per_meter / 1000.) as i32;
+        match ArpaTarget::refresh_target(
+            target,
+            &self.setup,
+            &mut self.history,
+            search_radius,
+            Pass::First,
+        ) {
+            Ok(t) => target = t,
+            Err(e) => {
+                log::debug!("Initial refresh failed for target {}: {:?}", uid, e);
+                return; // Don't add target if initial refresh fails
+            }
+        }
 
         self.targets.write().unwrap().insert(uid, target);
     }
 
     /// Work on the targets when spoke `angle` has just been processed.
     /// We look for targets a while back, so one quarter rotation ago.
+    /// Get the number of targets currently being tracked
+    fn target_count(&self) -> usize {
+        if let Some(ref manager) = self.shared_manager {
+            manager.target_count()
+        } else {
+            self.targets.read().unwrap().len()
+        }
+    }
+
+    /// Search for new targets within guard zones
+    /// This is the main target detection method that scans within configured guard zones
+    fn search_targets_in_guard_zones(&mut self, current_angle: usize) {
+        // Detect revolution completion (angle wrapped around)
+        let new_revolution = current_angle < self.prev_angle;
+        self.prev_angle = current_angle;
+
+        // Log once per revolution to show guard zone status
+        if new_revolution {
+            log::debug!(
+                "search_targets_in_guard_zones: zone0={} (angles {}..{}, range {}..{}), zone1={}, ppm={}",
+                self.guard_zones[0].enabled,
+                self.guard_zones[0].start_angle,
+                self.guard_zones[0].end_angle,
+                self.guard_zones[0].inner_range,
+                self.guard_zones[0].outer_range,
+                self.guard_zones[1].enabled,
+                self.setup.pixels_per_meter
+            );
+        }
+
+        if !self.has_active_guard_zone() {
+            return;
+        }
+
+        if self.target_count() >= MAX_NUMBER_OF_TARGETS - 2 {
+            log::debug!("Maximum number of targets reached, skipping guard zone search");
+            return;
+        }
+
+        if self.setup.pixels_per_meter == 0.0 {
+            return;
+        }
+
+        // Log once per revolution to confirm guard zone search is active
+        if new_revolution {
+            // Sample the history across the full guard zone range
+            let mut sample_count = 0;
+            let mut target_count = 0;
+            let mut edge_count = 0;
+            for zone_idx in 0..2 {
+                if !self.guard_zones[zone_idx].enabled {
+                    continue;
+                }
+                let inner = self.guard_zones[zone_idx].inner_range;
+                let outer = self.guard_zones[zone_idx].outer_range;
+                // Sample every 10th range value across the full range
+                for angle_offset in [0, 100, 200, 300, 400] {
+                    let angle = self
+                        .setup
+                        .mod_spokes(self.guard_zones[zone_idx].start_angle + angle_offset);
+                    let mut r = inner;
+                    while r < outer {
+                        sample_count += 1;
+                        if self.history.pix(&Doppler::Any, angle, r) {
+                            target_count += 1;
+                            // Check if any neighbor is NOT a target (edge detection)
+                            let has_clear_neighbor = !self.history.pix(&Doppler::Any, angle + 1, r)
+                                || !self.history.pix(&Doppler::Any, angle - 1, r)
+                                || !self.history.pix(&Doppler::Any, angle, r + 1)
+                                || !self.history.pix(&Doppler::Any, angle, r - 1);
+                            if has_clear_neighbor {
+                                edge_count += 1;
+                            }
+                        }
+                        r += 10; // Sample every 10th pixel
+                    }
+                }
+            }
+            log::info!(
+                "Guard zone: angles {}..{}, range {}..{} px, sampled {}/{} TARGET, {} edges",
+                self.guard_zones[0].start_angle,
+                self.guard_zones[0].end_angle,
+                self.guard_zones[0].inner_range,
+                self.guard_zones[0].outer_range,
+                target_count,
+                sample_count,
+                edge_count
+            );
+        }
+
+        // Scan margin: wait until beam has passed the angle we're checking
+        const SCAN_MARGIN_SPOKES: i32 = 10;
+
+        for zone_idx in 0..2 {
+            if !self.guard_zones[zone_idx].enabled {
+                continue;
+            }
+
+            let start_angle = self.guard_zones[zone_idx].start_angle;
+            let end_angle = if self.guard_zones[zone_idx].end_angle < start_angle {
+                self.guard_zones[zone_idx].end_angle + self.setup.spokes_per_revolution
+            } else {
+                self.guard_zones[zone_idx].end_angle
+            };
+            let inner_range = self.guard_zones[zone_idx].inner_range;
+            let outer_range = self.guard_zones[zone_idx].outer_range;
+
+            // Scan through the zone angles with +2 increment (target must be > 2 pixels wide)
+            let mut angle_iter = start_angle;
+            while angle_iter < end_angle {
+                let angle = self.setup.mod_spokes(angle_iter);
+
+                // Check timing: ensure beam has passed this angle
+                let time1 = self.history.spokes[angle as usize].time;
+                let check_angle = self.setup.mod_spokes(angle + SCAN_MARGIN_SPOKES);
+                let time2 = self.history.spokes[check_angle as usize].time;
+
+                // Only scan if beam has passed and we haven't scanned this angle recently
+                let last_scan = self.guard_zones[zone_idx].last_scan_time[angle as usize];
+                if time2 >= time1 && time1 > last_scan {
+                    self.guard_zones[zone_idx].last_scan_time[angle as usize] = time1;
+
+                    // Scan through the range within the zone
+                    for r in inner_range..outer_range {
+                        if self.target_count() >= MAX_NUMBER_OF_TARGETS - 1 {
+                            break;
+                        }
+
+                        // Use Any doppler to find all potential targets
+                        if self.history.multi_pix(&Doppler::Any, angle, r) {
+                            let time = self.history.spokes[angle as usize].time;
+                            let pol = Polar::new(angle, r, time);
+                            let own_pos = self.history.spokes[angle as usize].pos.clone();
+                            log::info!(
+                                "GuardZone target found at angle={}, range={} pixels",
+                                angle,
+                                r
+                            );
+                            // Acquire immediately so the blob is cleared before continuing
+                            // This prevents detecting the same blob at multiple r values
+                            self.acquire_new_arpa_target(
+                                pol,
+                                own_pos,
+                                time,
+                                TargetStatus::Acquire0,
+                                &Doppler::Any,
+                            );
+                            // After acquiring, the blob is cleared, so break out of range loop
+                            break;
+                        }
+                    }
+                }
+
+                angle_iter += 2;
+            }
+        }
+    }
+
+    /// Detect targets using doppler data
+    /// If guard zones are configured, only detects within those zones
     fn detect_doppler_arpa(&mut self, angle: usize) {
         let end_angle = self.setup.mod_spokes(
             angle as i32 + SCAN_FOR_NEW_PERCENTAGE * self.setup.spokes_per_revolution / 100,
@@ -1284,18 +1737,25 @@ impl TargetBuffer {
             );
         }
 
-        let mut angle = self.scanned_angle;
+        let has_guard_zones = self.has_active_guard_zone();
+
+        let mut scan_angle = self.scanned_angle;
         loop {
-            angle = self.setup.mod_spokes(angle + 2);
-            if angle >= end_angle {
+            scan_angle = self.setup.mod_spokes(scan_angle + 2);
+            if scan_angle >= end_angle {
                 break;
             }
 
             for r in 20..self.setup.spoke_len - 20 {
-                if self.history.multi_pix(&Doppler::AnyDoppler, angle, r) {
-                    let time = self.history.spokes[angle as usize].time.clone();
-                    let pol = Polar::new(angle, r, time);
-                    let own_pos = self.history.spokes[angle as usize].pos.clone();
+                // If guard zones are configured, only detect within them
+                if has_guard_zones && !self.is_in_guard_zone(scan_angle, r) {
+                    continue;
+                }
+
+                if self.history.multi_pix(&Doppler::AnyDoppler, scan_angle, r) {
+                    let time = self.history.spokes[scan_angle as usize].time.clone();
+                    let pol = Polar::new(scan_angle, r, time);
+                    let own_pos = self.history.spokes[scan_angle as usize].pos.clone();
 
                     self.acquire_new_arpa_target(
                         pol,
@@ -1307,7 +1767,7 @@ impl TargetBuffer {
                 }
             }
         }
-        self.scanned_angle = angle;
+        self.scanned_angle = scan_angle;
     }
 
     /// Work on the targets when spoke `angle` has just been processed.
@@ -1333,12 +1793,9 @@ impl TargetBuffer {
         }
 
         let pos = if let (Some(lat), Some(lon)) = (spoke.lat, spoke.lon) {
-            GeoPosition {
-                lat: lat as f64 * 1e-16,
-                lon: lon as f64 * 1e-16,
-            }
+            GeoPosition { lat, lon }
         } else {
-            log::trace!("No radar pos, no (M)ARPA possible");
+            log::info!("No radar pos, no (M)ARPA possible");
             return;
         };
 
@@ -1357,9 +1814,17 @@ impl TargetBuffer {
                 pixels_per_meter,
                 spoke.range
             );
+            let old_ppm = self.setup.pixels_per_meter;
             self.setup.pixels_per_meter = pixels_per_meter;
             self.reset_history();
             self.clear_contours();
+
+            // Recalculate guard zones when pixels_per_meter changes
+            for zone in &mut self.guard_zones {
+                if zone.has_pending_config() || zone.enabled {
+                    zone.recalculate(self.setup.spokes_per_revolution, pixels_per_meter);
+                }
+            }
         }
 
         // TODO: Think about orientation -- I don't think we have one in mayara: it is always head up?
@@ -1378,7 +1843,7 @@ impl TargetBuffer {
         self.history.spokes[angle].pos = pos;
         self.history.spokes[angle]
             .sweep
-            .resize(spoke.data.len(), HistoryPixel::INITIAL);
+            .resize(spoke.data.len(), HistoryPixel::empty());
 
         for radius in 0..spoke.data.len() {
             if spoke.data[radius] >= weakest_normal_blob {
@@ -1415,12 +1880,8 @@ impl TargetBuffer {
         self.detect_doppler_arpa(angle);
         self.refresh_targets(angle);
 
-        // TODO GUARD ZONES
-        // for zone in 0..GUARD_ZONES {
-        //if (m_guard_zone[z]->m_alarm_on) {
-        //  m_guard_zone[z]->ProcessSpoke(angle, data, m_history[bearing].line, len);
-        //}
-        //}
+        // Search for new targets in guard zones
+        self.search_targets_in_guard_zones(angle);
     }
 }
 
@@ -1439,7 +1900,7 @@ impl Contour {
 }
 
 impl ArpaTarget {
-    fn new(
+    pub(crate) fn new(
         position: ExtendedPosition,
         radar_pos: GeoPosition,
         uid: usize,
@@ -1472,6 +1933,8 @@ impl ArpaTarget {
             position,
             expected: Polar::new(0, 0, 0),
             age_rotations: 0,
+            source_radar: String::new(),
+            tracking_radar: String::new(),
         }
     }
 

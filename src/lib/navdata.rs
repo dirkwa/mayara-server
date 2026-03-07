@@ -64,6 +64,7 @@ pub(crate) fn get_position() -> (Option<f64>, Option<f64>) {
     if POSITION_VALID.load(Ordering::Acquire) {
         let lat = POSITION_LAT.load(Ordering::Acquire);
         let lon = POSITION_LON.load(Ordering::Acquire);
+        log::trace!("navdata::get_position() -> lat={}, lon={}", lat, lon);
         return (Some(lat), Some(lon));
     }
     return (None, None);
@@ -71,6 +72,7 @@ pub(crate) fn get_position() -> (Option<f64>, Option<f64>) {
 
 pub(crate) fn set_position(lat: Option<f64>, lon: Option<f64>) {
     if let (Some(lat), Some(lon)) = (lat, lon) {
+        log::debug!("navdata::set_position(lat={}, lon={})", lat, lon);
         POSITION_LAT.store(lat, Ordering::Release);
         POSITION_LON.store(lon, Ordering::Release);
         POSITION_VALID.store(true, Ordering::Release);
@@ -116,11 +118,7 @@ pub(crate) fn set_sog(sog: Option<f64>) {
 const SIGNAL_K_SERVICE_NAME: &'static str = "_signalk-tcp._tcp.local.";
 const NMEA0183_SERVICE_NAME: &'static str = "_nmea-0183._tcp.local.";
 
-const SUBSCRIBE: &'static str = "{\"context\": \"vessels.self\",
-         \"subscribe\": [{\"path\": \"navigation.headingTrue\"},
-                         {\"path\": \"navigation.position\"},
-                         {\"path\": \"navigation.speedOverGround\"},
-                         {\"path\": \"navigation.courseOverGroundTrue\"}]}\r\n";
+const SUBSCRIBE: &'static str = "{\"context\":\"vessels.self\",\"subscribe\":[{\"path\":\"navigation.headingTrue\"},{\"path\":\"navigation.position\"},{\"path\":\"navigation.speedOverGround\"},{\"path\":\"navigation.courseOverGroundTrue\"}]}\r\n";
 
 enum ConnectionType {
     Mdns,
@@ -423,6 +421,11 @@ impl NavigationData {
         mut stream: TcpStream,
         subsys: &SubsystemHandle,
     ) -> Result<(), RadarError> {
+        log::info!(
+            "{} receive_loop started for {}",
+            self.what,
+            stream.peer_addr().unwrap()
+        );
         let (read_half, mut write_half) = stream.split();
         let mut lines = BufReader::new(read_half).lines();
 
@@ -435,7 +438,7 @@ impl NavigationData {
                 r = lines.next_line() => {
                     match r {
                         Ok(Some(line)) => {
-                            log::trace!("{} <- {}", self.what, line);
+                            log::debug!("{} <- {}", self.what, line);
                             if self.nmea0183_mode {
                                 // We are in NMEA0183 mode, so we need to parse
                                 // the data we get.
@@ -447,18 +450,20 @@ impl NavigationData {
                                 // We are in SignalK mode, so we need to subscribe
                                 // to the data we want.
                                 if line.starts_with("{\"name\":") {
+                                    log::debug!("{} sending subscription", self.what);
                                     self.send_subscription(&mut write_half).await?;
-                                    log::trace!("{} -> {}", self.what, SUBSCRIBE);
+                                    log::debug!("{} -> {}", self.what, SUBSCRIBE);
                                 }
                                 else {
                                     match parse_signalk(&line) {
-                                        Err(e) => { log::warn!("{}", e)}
+                                        Err(e) => { log::debug!("{} parse error: {}", self.what, e)}
                                         Ok(_) => { }
                                     }
                                 }
                             }
                         }
                         Ok(None) => {
+                            log::warn!("{} connection closed by server", self.what);
                             return Ok(());
                         }
                         Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
@@ -478,8 +483,13 @@ impl NavigationData {
         stream: &mut tokio::net::tcp::WriteHalf<'_>,
     ) -> Result<(), RadarError> {
         let bytes: &[u8] = SUBSCRIBE.as_bytes();
-
-        stream.write_all(bytes).await.map_err(|e| RadarError::Io(e))
+        log::info!("Sending SignalK subscription: {}", SUBSCRIBE.trim());
+        let result = stream.write_all(bytes).await.map_err(|e| RadarError::Io(e));
+        match &result {
+            Ok(_) => log::debug!("Subscription sent successfully"),
+            Err(e) => log::warn!("Failed to send subscription: {:?}", e),
+        }
+        result
     }
 
     // Loop until we get an error, then just return the error
@@ -578,17 +588,25 @@ impl NavigationData {
 //     "values":[{"path":"navigation.position","value":{"longitude":5.428445,"latitude":53.180205}}]}]}
 
 fn parse_signalk(s: &str) -> Result<(), RadarError> {
+    log::debug!("parse_signalk: parsing '{}'", s);
     match serde_json::from_str::<Value>(s) {
         Ok(v) => {
+            log::debug!("parse_signalk: parsed JSON successfully");
             let updates = &v["updates"][0];
             let values = &updates["values"][0];
             {
-                log::trace!("values: {:?}", values);
+                log::debug!("parse_signalk: values = {:?}", values);
 
                 if let (Some(path), value) = (values["path"].as_str(), &values["value"]) {
+                    log::debug!("parse_signalk: path = '{}', value = {:?}", path, value);
                     match path {
                         "navigation.position" => {
-                            set_position(value["longitude"].as_f64(), value["latitude"].as_f64());
+                            log::debug!(
+                                "parse_signalk: position lat={:?} lon={:?}",
+                                value["latitude"].as_f64(),
+                                value["longitude"].as_f64()
+                            );
+                            set_position(value["latitude"].as_f64(), value["longitude"].as_f64());
                             return Ok(());
                         }
                         "navigation.headingTrue" => {
@@ -607,6 +625,8 @@ fn parse_signalk(s: &str) -> Result<(), RadarError> {
                             return Err(RadarError::ParseJson(format!("Ignored path '{}'", path)));
                         }
                     }
+                } else {
+                    log::debug!("parse_signalk: no path or value found in values");
                 }
             }
         }

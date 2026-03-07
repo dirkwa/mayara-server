@@ -1,7 +1,7 @@
 use axum::{
     Json, Router, debug_handler,
     extract::{ConnectInfo, Path, State},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::get,
 };
 use axum_embed::ServeEmbed;
@@ -149,8 +149,34 @@ struct Server {
     id: &'static str,
 }
 
-async fn endpoints(State(state): State<Web>, headers: hyper::header::HeaderMap) -> Json<Endpoints> {
+async fn endpoints(
+    State(state): State<Web>,
+    headers: hyper::header::HeaderMap,
+) -> Response {
     log::debug!("endpoints: headers: {:?}", headers);
+
+    // Check Accept header - if it prefers HTML, redirect to index.html
+    if let Some(accept) = headers.get(axum::http::header::ACCEPT) {
+        if let Ok(accept_str) = accept.to_str() {
+            // Browser requests typically have text/html before application/json
+            if accept_str.contains("text/html")
+                && !accept_str
+                    .split(',')
+                    .position(|s| s.trim().starts_with("application/json"))
+                    .map(|json_pos| {
+                        accept_str
+                            .split(',')
+                            .position(|s| s.trim().starts_with("text/html"))
+                            .map(|html_pos| json_pos < html_pos)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false)
+            {
+                return Redirect::to("/gui/index.html").into_response();
+            }
+        }
+    }
+
     let host: String = match headers.get(axum::http::header::HOST) {
         Some(host) => host.to_str().unwrap_or("localhost").to_string(),
         None => "localhost".to_string(),
@@ -180,7 +206,7 @@ async fn endpoints(State(state): State<Web>, headers: hyper::header::HeaderMap) 
         },
     );
 
-    Json(endpoints)
+    Json(endpoints).into_response()
 }
 
 #[derive(Deserialize)]
