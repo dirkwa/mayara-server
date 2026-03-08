@@ -43,6 +43,12 @@ var lastHeadingTime = 0; // Timestamp of last heading update
 var headingTimeoutId = null; // Timer for heading timeout
 const HEADING_TIMEOUT_MS = 5000; // Revert to HU after 5 seconds without heading
 
+// Position display
+var lastRadarLat = null;
+var lastRadarLon = null;
+var lastRadarHeading = null;
+var isStationary = false; // Set from server config
+
 registerRadarCallback(radarLoaded);
 registerControlCallback(controlUpdate);
 registerStreamMessageCallback(handleStreamMessage);
@@ -124,6 +130,9 @@ window.onload = async function () {
   // Create hamburger menu button and setup controls toggle
   createHamburgerMenu();
 
+  // Create position display box
+  createPositionBox();
+
   // Create heading mode toggle button
   createHeadingModeToggle();
 
@@ -204,6 +213,110 @@ function updateHeadingDisplay(mode) {
     }
   }
   return mode || headingMode;
+}
+
+// Coordinate format: 0 = DMS (degrees/minutes/seconds), 1 = DDM (degrees/decimal minutes), 2 = DD (decimal degrees)
+var coordFormat = 0;
+
+// Create position display box above heading toggle
+function createPositionBox() {
+  const container = document.querySelector(".myr_ppi");
+  if (!container) return;
+
+  const box = document.createElement("div");
+  box.id = "myr_position_box";
+  box.className = "myr_position_box";
+  box.style.display = "none"; // Hidden until we have position data
+  box.style.cursor = "pointer";
+  box.innerHTML = `
+    <div class="myr_pos_label">Ship Pos</div>
+    <div class="myr_pos_coords">--°--'--" N</div>
+    <div class="myr_pos_coords">--°--'--" E</div>
+    <div class="myr_pos_heading">Hdg: ---°</div>
+  `;
+  box.addEventListener("click", cycleCoordFormat);
+  container.appendChild(box);
+}
+
+// Cycle through coordinate formats on click
+function cycleCoordFormat() {
+  coordFormat = (coordFormat + 1) % 3;
+  // Re-render with current position
+  if (lastRadarLat !== null && lastRadarLon !== null) {
+    updatePositionBox(lastRadarLat, lastRadarLon, lastRadarHeading);
+  }
+}
+
+// Format degrees to degrees, minutes, seconds (DMS)
+function formatDMS(deg, isLat) {
+  const abs = Math.abs(deg);
+  const d = Math.floor(abs);
+  const minFloat = (abs - d) * 60;
+  const m = Math.floor(minFloat);
+  const s = ((minFloat - m) * 60).toFixed(1);
+  const dir = isLat ? (deg >= 0 ? "N" : "S") : (deg >= 0 ? "E" : "W");
+  return `${d}°${m.toString().padStart(2, "0")}'${s.padStart(4, "0")}" ${dir}`;
+}
+
+// Format degrees to degrees, decimal minutes (DDM)
+function formatDDM(deg, isLat) {
+  const abs = Math.abs(deg);
+  const d = Math.floor(abs);
+  const minFloat = (abs - d) * 60;
+  const dir = isLat ? (deg >= 0 ? "N" : "S") : (deg >= 0 ? "E" : "W");
+  return `${d}°${minFloat.toFixed(3)}' ${dir}`;
+}
+
+// Format degrees to decimal degrees (DD)
+function formatDD(deg, isLat) {
+  const dir = isLat ? (deg >= 0 ? "N" : "S") : (deg >= 0 ? "E" : "W");
+  return `${Math.abs(deg).toFixed(5)}° ${dir}`;
+}
+
+// Format coordinate based on current format setting
+function formatCoord(deg, isLat) {
+  switch (coordFormat) {
+    case 0: return formatDMS(deg, isLat);
+    case 1: return formatDDM(deg, isLat);
+    case 2: return formatDD(deg, isLat);
+    default: return formatDMS(deg, isLat);
+  }
+}
+
+// Update position display with new data
+function updatePositionBox(lat, lon, heading) {
+  const box = document.getElementById("myr_position_box");
+  if (!box) return;
+
+  if (lat === null || lon === null) {
+    box.style.display = "none";
+    return;
+  }
+
+  lastRadarLat = lat;
+  lastRadarLon = lon;
+  if (heading !== null && heading !== undefined) {
+    lastRadarHeading = heading;
+  }
+
+  const label = box.querySelector(".myr_pos_label");
+  const coords = box.querySelectorAll(".myr_pos_coords");
+  const hdgEl = box.querySelector(".myr_pos_heading");
+
+  if (label) {
+    label.textContent = isStationary ? "Stationary" : "Ship Pos";
+  }
+
+  if (coords.length >= 2) {
+    coords[0].textContent = formatCoord(lat, true);
+    coords[1].textContent = formatCoord(lon, false);
+  }
+
+  if (hdgEl && lastRadarHeading !== null) {
+    hdgEl.textContent = `Hdg: ${lastRadarHeading.toFixed(1)}°`;
+  }
+
+  box.style.display = "block";
 }
 
 // Create the heading mode toggle button
@@ -525,6 +638,9 @@ function radarLoaded(r) {
   // Also initialize renderer with spokes (for texture sizing)
   renderer.setSpokes(spokesPerRevolution, maxSpokeLength);
 
+  // Set stationary mode from capabilities
+  isStationary = capabilities.stationary || false;
+
   // Use provided spokeDataUrl or construct SignalK stream URL
   let spokeDataUrl = r.spokeDataUrl;
   if (
@@ -573,12 +689,27 @@ function radarLoaded(r) {
       let bytes = new Uint8Array(buf);
       var message = RadarMessage.decode(bytes);
       if (message.spokes && message.spokes.length > 0) {
+        let lastSpoke = null;
         for (let i = 0; i < message.spokes.length; i++) {
           let spoke = message.spokes[i];
           ppi.drawSpoke(spoke);
           prev_angle = spoke.angle;
+          lastSpoke = spoke;
         }
         ppi.render();
+        // Update position box with radar position from last spoke
+        // Heading is derived from spoke.bearing - spoke.angle (in spokes units)
+        if (lastSpoke && lastSpoke.lat !== undefined && lastSpoke.lon !== undefined) {
+          let heading = null;
+          if (lastSpoke.bearing !== undefined) {
+            // Convert from spokes to degrees: (bearing - angle) * 360 / spokesPerRevolution
+            heading = (lastSpoke.bearing - lastSpoke.angle) * 360 / spokesPerRevolution;
+            // Normalize to 0-360
+            if (heading < 0) heading += 360;
+            if (heading >= 360) heading -= 360;
+          }
+          updatePositionBox(lastSpoke.lat, lastSpoke.lon, heading);
+        }
       }
     } catch (err) {
       console.error("Error processing WebSocket message:", err);

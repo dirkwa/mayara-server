@@ -160,6 +160,10 @@ pub struct Legend {
     pub target_border: u8,
     pub pixel_colors: u8,
     pub pixels: Vec<Lookup>,
+    /// Color for static background in Static ARPA mode (light grey)
+    pub static_background: Option<u8>,
+    /// Weakest return value that is considered a target
+    pub weakest_return: Option<u8>,
 }
 
 /// A geographic position expressed in degrees latitude and longitude.
@@ -230,6 +234,7 @@ pub struct RadarInfo {
     pub(crate) range_detection: Option<RangeDetection>, // if Some, then ranges are flexible, detected and persisted
     pub doppler: bool,                                  // Does it support Doppler?
     pub dual_range: bool,                               // Is it dual range capable?
+    pub stationary: bool,                               // Is radar stationary (shore-based)?
     rotation_timestamp: Instant,
 
     // Channels
@@ -304,6 +309,7 @@ impl RadarInfo {
             controls,
             doppler,
             dual_range: false,
+            stationary: args.stationary,
             rotation_timestamp: Instant::now() - Duration::from_secs(2),
         };
 
@@ -870,6 +876,8 @@ fn default_legend(targets: &TargetMode, doppler: bool, pixel_values: u8) -> Lege
         strong_return: 0,
         medium_return: 0,
         low_return: 0,
+        static_background: None,
+        weakest_return: None,
     };
 
     let pixel_values = min(
@@ -948,6 +956,21 @@ fn default_legend(targets: &TargetMode, doppler: bool, pixel_values: u8) -> Lege
                 a: 128, // 50% transparent
             },
         });
+
+        // Static background color (light grey) for Static ARPA mode
+        legend.static_background = Some(legend.pixels.len() as u8);
+        legend.pixels.push(Lookup {
+            r#type: PixelType::History, // Reuse History type for static background
+            color: Color {
+                r: 80,
+                g: 80,
+                b: 80,
+                a: OPAQUE,
+            },
+        });
+
+        // Set weakest return threshold (low_return is the weakest visible return)
+        legend.weakest_return = Some(legend.low_return);
     }
 
     if doppler {

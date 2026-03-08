@@ -83,9 +83,14 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub allow_wifi: bool,
 
-    /// Stationary mode
+    /// Stationary mode for shore-based radar
     #[arg(long, default_value_t = false)]
     pub stationary: bool,
+
+    /// Static position for stationary radar: latitude longitude heading
+    /// Example: --static-position 52.3676 4.9041 45.0
+    #[arg(long, value_names = ["LAT", "LON", "HEADING"], num_args = 3)]
+    pub static_position: Option<Vec<f64>>,
 
     /// Multi-radar mode keeps locators running even when one radar is found
     #[arg(long, default_value_t = false)]
@@ -98,6 +103,31 @@ pub struct Cli {
     /// Automatically put detected radars into transmit mode
     #[arg(long, default_value_t = false)]
     pub transmit: bool,
+}
+
+/// Static position data (latitude, longitude, heading)
+#[derive(Clone, Copy, Debug)]
+pub struct StaticPosition {
+    pub lat: f64,
+    pub lon: f64,
+    pub heading: f64,
+}
+
+impl Cli {
+    /// Get the static position if specified
+    pub fn get_static_position(&self) -> Option<StaticPosition> {
+        self.static_position.as_ref().and_then(|v| {
+            if v.len() == 3 {
+                Some(StaticPosition {
+                    lat: v[0],
+                    lon: v[1],
+                    heading: v[2],
+                })
+            } else {
+                None
+            }
+        })
+    }
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Hash, ToSchema)]

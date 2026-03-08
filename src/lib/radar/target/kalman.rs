@@ -3,14 +3,12 @@ use std::{f64::consts::PI, ops::Add};
 
 use crate::radar::GeoPosition;
 
-const NOISE: f64 = 1.0;
-// original value 0.015, larger values make target better follow change of
-// target heading But too large value makes target adapt to any change of
-// heading immediately, causing instability 2.0 seems to follow fast (20+ knts)
-// pilot boat close in-shore Allowed covariance of target speed in lat and lon.
-// critical for the performance of target tracking
-// lower value makes target go straight
-// higher values allow target to make curves
+const NOISE_NORMAL: f64 = 0.015;
+const NOISE_FAST: f64 = 1.0;
+// NOISE controls how quickly targets can change heading.
+// Lower value (0.015) makes targets go straighter - good for stable targets.
+// Higher value (1.0) allows targets to make curves - good for maneuvering targets.
+// Original radar_pi value was 0.015, walradar_client changed to 1.0 for fast targets.
 
 // const CONVERT: f64 = (((1. / 1852.) / 1852.) / 60.) / 60.; // converts meters ^ 2 to degrees ^ 2
 
@@ -92,6 +90,7 @@ pub struct KalmanFilter {
     k: Matrix4x2,
     i: Matrix4x4,
     pub spokes_per_revolution: f64,
+    noise: f64,
 }
 
 impl KalmanFilter {
@@ -114,9 +113,31 @@ impl KalmanFilter {
             k: Matrix4x2::zeros(),
             i: Matrix4x4::identity(),
             spokes_per_revolution: spokes_per_revolution as f64,
+            noise: NOISE_NORMAL,
         };
         f.reset_filter();
         f
+    }
+
+    /// Set the noise value for the Kalman filter.
+    /// Use NOISE_NORMAL (0.015) for stable targets, NOISE_FAST (1.0) for maneuvering targets.
+    pub fn set_noise(&mut self, noise: f64) {
+        if (self.noise - noise).abs() > f64::EPSILON {
+            self.noise = noise;
+            // Update Q matrix with new noise value
+            self.q[(0, 0)] = noise;
+            self.q[(1, 1)] = noise;
+        }
+    }
+
+    /// Get noise value for Normal ARPA mode
+    pub fn noise_normal() -> f64 {
+        NOISE_NORMAL
+    }
+
+    /// Get noise value for Fast ARPA mode
+    pub fn noise_fast() -> f64 {
+        NOISE_FAST
     }
 
     pub fn reset_filter(&mut self) {
@@ -157,9 +178,9 @@ impl KalmanFilter {
 
         // Q Process noise covariance matrix
         //((((1. / 1852.) / 1852.) / 60.) / 60.) // converts meters ^ 2 to degrees ^ 2
-        self.q[(0, 0)] = NOISE;
+        self.q[(0, 0)] = self.noise;
         // variance in lat speed, (m / sec)2. This variable controls the rate of turn of targets and how fast targets pick up speed
-        self.q[(1, 1)] = NOISE;
+        self.q[(1, 1)] = self.noise;
         // variance in lon speed, (m / sec)2. This variable controls the rate of turn of targets and how fast targets pick up speed
 
         // R measurement noise covariance matrix

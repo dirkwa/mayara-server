@@ -55,6 +55,7 @@ let streamMessageCallbacks = [];
 let playbackMode = false;
 let acquireTargetMode = false;
 let acquireTargetModeCallbacks = [];
+let acquireTargetModeTimer = null;
 
 // Control state (from v1)
 let myr_control_values = {};
@@ -888,7 +889,7 @@ function buildAcquireTargetControl() {
         id: "myr_acquire_target_btn",
         onclick: () => setAcquireTargetMode(!acquireTargetMode),
       },
-      "Acquire Target"
+      "Acquire targets"
     ),
     div(
       {
@@ -1631,6 +1632,19 @@ function setAcquireTargetMode(enabled) {
   acquireTargetMode = enabled;
   console.log(`setAcquireTargetMode: ${enabled}, ${acquireTargetModeCallbacks.length} callbacks registered`);
 
+  // Clear any existing auto-revert timer
+  if (acquireTargetModeTimer) {
+    clearTimeout(acquireTargetModeTimer);
+    acquireTargetModeTimer = null;
+  }
+
+  // Set auto-revert timer when enabling
+  if (enabled) {
+    acquireTargetModeTimer = setTimeout(() => {
+      setAcquireTargetMode(false);
+    }, 20000);
+  }
+
   // Update button state
   const btn = document.getElementById("myr_acquire_target_btn");
   if (btn) {
@@ -1678,9 +1692,12 @@ async function acquireTargetAtPosition(bearing, distance) {
 
   const result = await apiAcquireTarget(radarId, bearing, distance);
 
-  if (result) {
-    // Optionally disable acquire mode after successful acquisition
-    // setAcquireTargetMode(false);
+  // Reset the auto-revert timer after each target acquisition
+  if (acquireTargetMode && acquireTargetModeTimer) {
+    clearTimeout(acquireTargetModeTimer);
+    acquireTargetModeTimer = setTimeout(() => {
+      setAcquireTargetMode(false);
+    }, 20000);
   }
 
   return result;

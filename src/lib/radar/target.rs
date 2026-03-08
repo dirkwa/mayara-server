@@ -78,7 +78,7 @@ pub struct TargetDangerApi {
     pub tcpa: f64,
 }
 
-const MIN_BLOB_PIXELS: usize = 1000; // minimum number of pixels for a valid blob
+const MIN_BLOB_PIXELS: usize = 32; // minimum number of pixels for a valid blob
 const MAX_BLOB_PIXELS: usize = 10000; // maximum blob size (radar interference protection)
 const MAX_LOST_COUNT: i32 = 12; // number of sweeps that target can be missed before it is set to lost
 const MAX_DETECTION_SPEED_KN: f64 = 40.;
@@ -464,6 +464,8 @@ pub(self) struct TargetSetup {
     pixels_per_meter: f64,
     rotation_speed_ms: u32,
     stationary: bool,
+    /// ARPA mode: 0 = Normal, 1 = Fast, 2 = Static
+    arpa_mode: i32,
 }
 
 /// A blob being incrementally built as spokes arrive
@@ -1143,6 +1145,7 @@ impl TargetBuffer {
 
                 rotation_speed_ms: 0,
                 stationary,
+                arpa_mode: 0, // Default to Normal mode
             },
             next_target_id: 0,
             arpa_via_doppler: false,
@@ -1246,6 +1249,17 @@ impl TargetBuffer {
         }
         self.arpa_via_doppler = arpa;
         Ok(())
+    }
+
+    /// Set ARPA mode: 0 = Normal, 1 = Fast, 2 = Static
+    pub fn set_arpa_mode(&mut self, mode: i32) {
+        self.setup.arpa_mode = mode;
+        log::info!("ARPA mode set to {}", match mode {
+            0 => "Normal",
+            1 => "Fast",
+            2 => "Static",
+            _ => "Unknown",
+        });
     }
 
     fn reset_history(&mut self) {
@@ -1964,7 +1978,8 @@ impl TargetBuffer {
         // Store heading for use by process_completed_blob
         self.current_heading = heading;
 
-        let background_on = self.setup.stationary; // TODO m_autolearning_on_off.GetValue() == 1;
+        // Build up static background when in stationary mode
+        let background_on = self.setup.stationary;
 
         // Overlay blob edges from previous rotation BEFORE clearing history
         self.overlay_blob_edges(spoke, angle, legend);
@@ -2010,9 +2025,27 @@ impl TargetBuffer {
     }
 
     /// Overlay blob edge markers from history onto the spoke data
+    /// In stationary mode, also displays the static background in light grey
     fn overlay_blob_edges(&self, spoke: &mut Spoke, angle: usize, legend: &Legend) {
         if angle >= self.history.spokes.len() {
             return;
+        }
+
+        // In stationary mode, show stationary layer in light grey
+        if self.setup.stationary {
+            if let Some(layer) = &self.history.stationary_layer {
+                // Light grey color for static background (using a low value that won't be interpreted as a target)
+                let static_bg_color = legend.static_background.unwrap_or(32);
+                for radius in 0..spoke.data.len().min(layer.ncols()) {
+                    // Show pixels that have been seen at least a few times
+                    if layer[[angle, radius]] >= 3 {
+                        // Only show static background if current pixel is not already a return
+                        if spoke.data[radius] < legend.weakest_return.unwrap_or(128) {
+                            spoke.data[radius] = static_bg_color;
+                        }
+                    }
+                }
+            }
         }
 
         let sweep = &self.history.spokes[angle].sweep;
@@ -2571,6 +2604,14 @@ impl ArpaTarget {
             target.position.dlat_dt,
             target.position.dlon_dt,
         );
+
+        // Set Kalman filter noise based on ARPA mode: Normal (0) uses 0.015, Fast (1) uses 1.0
+        let noise = if setup.arpa_mode == 1 {
+            KalmanFilter::noise_fast()
+        } else {
+            KalmanFilter::noise_normal()
+        };
+        target.m_kalman.set_noise(noise);
 
         target.m_kalman.predict(&mut x_local, delta_t); // x_local is new estimated local position of the target
         // now set the polar to expected angular position from the expected local position

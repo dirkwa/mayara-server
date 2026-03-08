@@ -323,6 +323,7 @@ async fn get_interfaces(
     "hasDualRange": true,
     "hasDualRadar": false,
     "noTransmitSectors": 2,
+    "stationary": false,
     "controls": {}
 }))]
 struct Capabilities {
@@ -358,6 +359,9 @@ struct Capabilities {
     /// Number of configurable no-transmit sectors
     #[schema(example = 2)]
     no_transmit_sectors: u8,
+    /// Whether this radar is configured as stationary (shore-based)
+    #[schema(example = false)]
+    stationary: bool,
     /// Map of control IDs to their definitions and current state
     controls: HashMap<ControlId, Control>,
 }
@@ -392,6 +396,7 @@ impl Capabilities {
                     )
                 })
                 .count() as u8,
+            stationary: info.stationary,
             controls,
         }
     }
