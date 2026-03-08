@@ -129,6 +129,10 @@ class PPI {
 
     // ARPA targets: Map of targetId -> target data
     this.targets = new Map();
+
+    // Target acquisition mode
+    this.acquireTargetMode = false;
+    this.onTargetAcquire = null; // Callback: (bearing, distance) => void
   }
 
   /**
@@ -172,6 +176,19 @@ class PPI {
 
   getHeadingMode() {
     return this.headingMode;
+  }
+
+  /**
+   * Set acquire target mode
+   * @param {boolean} enabled - Whether acquire mode is active
+   * @param {function} callback - Callback function(bearing, distance) when target is acquired
+   */
+  setAcquireTargetMode(enabled, callback = null) {
+    console.log(`PPI: setAcquireTargetMode(${enabled}), callback=${callback ? 'provided' : 'null'}`);
+    this.acquireTargetMode = enabled;
+    this.onTargetAcquire = callback;
+    // Update pointer events to enable/disable click handling
+    this.#updatePointerEvents();
   }
 
   setPowerMode(powerMode, onTimeSeconds, txTimeSeconds) {
@@ -281,6 +298,7 @@ class PPI {
    * @param {object} data - Target data from server (ArpaTargetApi format)
    */
   updateTarget(id, data) {
+    console.log(`PPI.updateTarget(${id}):`, data);
     this.targets.set(id, data);
     this.#drawOverlay();
   }
@@ -399,11 +417,12 @@ class PPI {
     if (!this.data || !this.legend || !this.spokeProcessor) return;
 
     // Extract heading from spoke if available
-    if (spoke.bearing && spoke.angle) {
+    // Heading = bearing - angle (geographic bearing minus relative angle)
+    if (spoke.bearing !== undefined && spoke.angle !== undefined) {
       const heading =
         (spoke.bearing + this.spokesPerRevolution - spoke.angle) %
         this.spokesPerRevolution;
-      this.lastHeading = (spoke.heading * 360) / this.spokesPerRevolution;
+      this.lastHeading = (heading * 360) / this.spokesPerRevolution;
     } else {
       this.lastHeading = null;
     }
@@ -736,11 +755,16 @@ class PPI {
   }
 
   #drawTargets(ctx, range) {
-    if (!range || range <= 0 || this.targets.size === 0) return;
+    // Use actual_range for target drawing (matches acquisition coordinate conversion)
+    // Navico radars overscan - spoke data covers more distance than user-selected range
+    const actualRange = this.actual_range || range;
+    console.log(`#drawTargets: targets.size=${this.targets.size}, actualRange=${actualRange}, beam_length=${this.beam_length}`);
+    if (!actualRange || actualRange <= 0 || this.targets.size === 0) return;
 
-    const pixelsPerMeter = this.beam_length / range;
+    const pixelsPerMeter = this.beam_length / actualRange;
 
     for (const [id, target] of this.targets) {
+      console.log(`Drawing target ${id} at bearing=${target.position?.bearing}, distance=${target.position?.distance}`);
       this.#drawTarget(ctx, id, target, pixelsPerMeter);
     }
   }
@@ -749,16 +773,24 @@ class PPI {
     if (!target.position) return;
 
     // Calculate screen position from bearing and distance
-    const bearingRad = (target.position.bearing * Math.PI) / 180;
+    // Target bearing is geographic (true bearing from radar to target) in radians
+    const bearingRad = target.position.bearing; // Already in radians from API
     const distance = target.position.distance;
     const pixelDist = distance * pixelsPerMeter;
 
-    // Apply heading rotation (positive = clockwise on screen, matching radar image rotation)
-    const adjustedBearing = bearingRad + this.headingRotation;
+    // In North-Up mode (headingRotation = heading), geographic bearing is displayed directly
+    // In Heading-Up mode (headingRotation = 0), we need to convert geographic to relative
+    // by subtracting heading. The formula: screenAngle = geographicBearing - heading + headingRotation
+    // Simplifies to: screenAngle = geographicBearing - heading in HU mode
+    //                screenAngle = geographicBearing in NU mode
+    const heading = this.trueHeading || 0;
+    const adjustedBearing = bearingRad - heading + this.headingRotation;
 
     // Convert polar to cartesian (bearing is clockwise from north)
     const x = this.center_x + pixelDist * Math.sin(adjustedBearing);
     const y = this.center_y - pixelDist * Math.cos(adjustedBearing);
+
+    console.log(`#drawTarget ${id}: center=(${this.center_x},${this.center_y}), pixelDist=${pixelDist.toFixed(1)}, adjustedBearing=${adjustedBearing.toFixed(2)}, x=${x.toFixed(1)}, y=${y.toFixed(1)}, canvas=${this.width}x${this.height}`);
 
     // Determine color based on status
     let color;
@@ -805,7 +837,8 @@ class PPI {
 
     // Draw velocity vector if we have motion data
     if (target.motion && target.status === "tracking") {
-      const courseRad = (target.motion.course * Math.PI) / 180 + this.headingRotation;
+      // Course is geographic (already in radians from API), apply same transformation as bearing
+      const courseRad = target.motion.course - heading + this.headingRotation;
       const speed = target.motion.speed; // m/s
 
       // Scale vector length: 1 minute of travel
@@ -949,10 +982,11 @@ class PPI {
 
   #updatePointerEvents() {
     const isEditing = this.editingZoneIndex !== null || this.editingSectorIndex !== null;
+    const needsPointerEvents = isEditing || this.acquireTargetMode;
 
-    if (isEditing && this.overlay_dom) {
+    if (needsPointerEvents && this.overlay_dom) {
       this.overlay_dom.style.pointerEvents = "auto";
-      this.overlay_dom.style.cursor = "default";
+      this.overlay_dom.style.cursor = this.acquireTargetMode ? "crosshair" : "default";
       this.#setupDragHandlers();
     } else if (this.overlay_dom) {
       this.overlay_dom.style.pointerEvents = "none";
@@ -1014,7 +1048,9 @@ class PPI {
     while (angle > Math.PI) angle -= 2 * Math.PI;
     while (angle < -Math.PI) angle += 2 * Math.PI;
     const pixelDist = Math.sqrt(dx * dx + dy * dy);
-    const range = this.range || this.actual_range;
+    // Use actual spoke range for coordinate conversion, not user-selected range
+    // Navico radars "overscan" - spoke data covers more distance than selected range
+    const range = this.actual_range || this.range;
     const pixelsPerMeter = range > 0 ? this.beam_length / range : 1;
     const distance = pixelDist / pixelsPerMeter;
     return { angle, distance };
@@ -1121,6 +1157,10 @@ class PPI {
 
   #handleMouseDown(event) {
     const coords = this.#getCanvasCoords(event);
+
+    // Record click start position for acquire mode
+    this._clickStart = { x: coords.x, y: coords.y };
+
     const hit = this.#hitTestHandles(coords.x, coords.y);
 
     if (hit) {
@@ -1186,7 +1226,32 @@ class PPI {
       }
       this.dragState = null;
       this.overlay_dom.style.cursor = this.hoveredHandle ? "grab" : "default";
+    } else if (this.acquireTargetMode && this._clickStart) {
+      // Handle click for target acquisition
+      const coords = this.#getCanvasCoords(event);
+      const dx = coords.x - this._clickStart.x;
+      const dy = coords.y - this._clickStart.y;
+      const clickDistance = Math.sqrt(dx * dx + dy * dy);
+
+      // Only treat as click if mouse didn't move much (not a drag)
+      if (clickDistance < 5) {
+        const radarCoords = this.#pixelToRadarCoords(coords.x, coords.y);
+        // Keep bearing in radians, add true heading to get bearing true
+        let bearingRad = radarCoords.angle + (this.trueHeading || 0);
+        // Normalize to [0, 2π)
+        while (bearingRad < 0) bearingRad += 2 * Math.PI;
+        while (bearingRad >= 2 * Math.PI) bearingRad -= 2 * Math.PI;
+
+        const bearingDeg = (bearingRad * 180) / Math.PI;
+        console.log(`Acquire target click: bearing=${bearingDeg.toFixed(1)}° (${bearingRad.toFixed(3)} rad), distance=${radarCoords.distance.toFixed(0)}m`);
+
+        if (this.onTargetAcquire) {
+          // Send bearing in radians to match API format
+          this.onTargetAcquire(bearingRad, radarCoords.distance);
+        }
+      }
     }
+    this._clickStart = null;
   }
 
   #handleTouchStart(event) {

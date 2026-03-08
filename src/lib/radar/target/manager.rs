@@ -11,7 +11,11 @@ use std::{
 
 use crate::radar::GeoPosition;
 
-use super::{ArpaTarget, ArpaTargetApi, Doppler, ExtendedPosition, RefreshState, TargetStatus};
+use super::kalman::Polar;
+use super::{
+    ArpaTarget, ArpaTargetApi, Doppler, ExtendedPosition, RefreshState, TargetStatus,
+    METERS_PER_DEGREE_LATITUDE,
+};
 
 /// Configuration for a radar participating in shared target management
 #[derive(Debug, Clone)]
@@ -192,14 +196,46 @@ impl SharedTargetManager {
             state.next_target_id = 1;
         }
 
-        let target = ArpaTarget::new(
+        // Get radar config to calculate polar coordinates
+        let radar_config = state.radar_configs.get(radar_key).cloned();
+
+        // Get radar position from config or use default
+        let radar_pos = radar_config
+            .as_ref()
+            .map(|c| c.position.clone())
+            .unwrap_or_else(|| GeoPosition::new(0., 0.));
+
+        let mut target = ArpaTarget::new(
             position.clone(),
-            GeoPosition::new(0., 0.),
+            radar_pos.clone(),
             target_id,
             spokes_per_revolution,
             TargetStatus::Acquire0,
             have_doppler,
         );
+
+        // Calculate polar coordinates if we have radar config with valid pixels_per_meter
+        if let Some(config) = &radar_config {
+            if config.pixels_per_meter > 0.0 {
+                let polar = Self::pos2polar(
+                    &position,
+                    &radar_pos,
+                    config.pixels_per_meter,
+                    config.spokes_per_revolution as f64,
+                );
+                // Set contour position and expected so refresh can find the target
+                target.contour.position = polar.clone();
+                target.expected = polar.clone();
+
+                log::debug!(
+                    "Acquired target {} polar: angle={}, r={}, pixels_per_meter={}",
+                    target_id,
+                    polar.angle,
+                    polar.r,
+                    config.pixels_per_meter
+                );
+            }
+        }
 
         let managed = ManagedTarget {
             target,
@@ -219,6 +255,28 @@ impl SharedTargetManager {
 
         state.targets.insert(target_id, managed);
         target_id
+    }
+
+    /// Convert lat/lon position to polar coordinates (angle in spokes, r in pixels)
+    fn pos2polar(
+        target: &ExtendedPosition,
+        radar_pos: &GeoPosition,
+        pixels_per_meter: f64,
+        spokes_per_revolution: f64,
+    ) -> Polar {
+        use std::f64::consts::PI;
+
+        let dif_lat = target.pos.lat - radar_pos.lat;
+        let dif_lon = (target.pos.lon - radar_pos.lon) * radar_pos.lat.to_radians().cos();
+        let r = ((dif_lat * dif_lat + dif_lon * dif_lon).sqrt()
+            * METERS_PER_DEGREE_LATITUDE
+            * pixels_per_meter
+            + 1.) as i32;
+        let mut angle = f64::atan2(dif_lon, dif_lat) * spokes_per_revolution / (2. * PI) + 1.;
+        if angle < 0. {
+            angle += spokes_per_revolution;
+        }
+        Polar::new(angle as i32, r, target.time)
     }
 
     /// Add an already-constructed target to the shared manager

@@ -21,6 +21,11 @@ export {
   zoomIn,
   zoomOut,
   getCurrentRangeDisplay,
+  isAcquireTargetMode,
+  setAcquireTargetMode,
+  acquireTargetAtPosition,
+  registerAcquireTargetModeCallback,
+  getRadarId,
 };
 
 import van from "./van-1.5.2.js";
@@ -30,6 +35,7 @@ import {
   fetchRadarIds,
   fetchCapabilities,
   setControl as apiSetControl,
+  acquireTarget as apiAcquireTarget,
   detectMode,
   isStandaloneMode,
   isPlaybackRadar,
@@ -47,6 +53,8 @@ let radarCallbacks = [];
 let controlCallbacks = [];
 let streamMessageCallbacks = [];
 let playbackMode = false;
+let acquireTargetMode = false;
+let acquireTargetModeCallbacks = [];
 
 // Control state (from v1)
 let myr_control_values = {};
@@ -859,7 +867,38 @@ function buildControls() {
         van.add(get_element_by_server_id(k).parentNode, EnabledButton(k));
       }
     }
+
+    // Add "Acquire Target" button to the targets section
+    if (category === "targets") {
+      van.add(section, buildAcquireTargetControl());
+    }
   }
+}
+
+/**
+ * Build the Acquire Target control with button and status text
+ */
+function buildAcquireTargetControl() {
+  return div(
+    { class: "myr_control myr_acquire_target_control" },
+    button(
+      {
+        type: "button",
+        class: "myr_action_button myr_acquire_target_btn",
+        id: "myr_acquire_target_btn",
+        onclick: () => setAcquireTargetMode(!acquireTargetMode),
+      },
+      "Acquire Target"
+    ),
+    div(
+      {
+        class: "myr_acquire_target_status",
+        id: "myr_acquire_target_status",
+        style: "display: none;",
+      },
+      ""
+    )
+  );
 }
 
 function buildSingleControl(k, v) {
@@ -1564,4 +1603,85 @@ function getCurrentRangeDisplay() {
     return control.descriptions[currentValue];
   }
   return currentValue ? `${currentValue} m` : "";
+}
+
+// ============================================================================
+// Target Acquisition Mode
+// ============================================================================
+
+/**
+ * Get the current radar ID
+ */
+function getRadarId() {
+  return radarId;
+}
+
+/**
+ * Check if acquire target mode is active
+ */
+function isAcquireTargetMode() {
+  return acquireTargetMode;
+}
+
+/**
+ * Set acquire target mode
+ * @param {boolean} enabled - Whether to enable acquire target mode
+ */
+function setAcquireTargetMode(enabled) {
+  acquireTargetMode = enabled;
+  console.log(`setAcquireTargetMode: ${enabled}, ${acquireTargetModeCallbacks.length} callbacks registered`);
+
+  // Update button state
+  const btn = document.getElementById("myr_acquire_target_btn");
+  if (btn) {
+    btn.classList.toggle("myr_acquire_active", enabled);
+  }
+
+  // Update status text
+  const status = document.getElementById("myr_acquire_target_status");
+  if (status) {
+    status.textContent = enabled ? "Click in PPI to acquire" : "";
+    status.style.display = enabled ? "block" : "none";
+  }
+
+  // Notify callbacks
+  acquireTargetModeCallbacks.forEach((cb) => cb(enabled));
+}
+
+/**
+ * Register callback for acquire target mode changes
+ * @param {function} callback - Callback function(enabled: boolean)
+ */
+function registerAcquireTargetModeCallback(callback) {
+  acquireTargetModeCallbacks.push(callback);
+}
+
+/**
+ * Acquire a target at the specified bearing and distance from radar
+ * @param {number} bearing - Bearing in radians true [0, 2π)
+ * @param {number} distance - Distance in meters
+ * @returns {Promise<{targetId: number, radarId: string}|null>}
+ */
+async function acquireTargetAtPosition(bearing, distance) {
+  if (!radarId) {
+    console.error("No radar loaded");
+    return null;
+  }
+
+  if (playbackMode) {
+    console.log("Playback mode: ignoring target acquisition");
+    return null;
+  }
+
+  const bearingDeg = (bearing * 180) / Math.PI;
+  console.log(`Acquiring target at bearing ${bearingDeg.toFixed(1)}° (${bearing.toFixed(3)} rad), distance ${distance.toFixed(0)}m`);
+
+  const result = await apiAcquireTarget(radarId, bearing, distance);
+
+  if (result) {
+    // Optionally disable acquire mode after successful acquisition
+    // setAcquireTargetMode(false);
+  }
+
+  return result;
 }

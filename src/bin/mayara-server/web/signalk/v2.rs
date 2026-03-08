@@ -48,6 +48,8 @@ const INTERFACES_URI: &str = "/signalk/v2/api/vessels/self/radars/interfaces";
 const RADAR_CONTROLS_URI: &str = "/signalk/v2/api/vessels/self/radars/{radar_id}/controls";
 const RADAR_CONTROL_URI: &str =
     "/signalk/v2/api/vessels/self/radars/{radar_id}/controls/{control_id}";
+const RADAR_ACQUIRE_TARGET_URI: &str =
+    "/signalk/v2/api/vessels/self/radars/{radar_id}/targets/acquire";
 
 #[derive(OpenApi)]
 #[openapi(
@@ -61,6 +63,7 @@ const RADAR_CONTROL_URI: &str =
     tags(
         (name = "Radars", description = "Radar discovery and capabilities"),
         (name = "Controls", description = "Read and modify radar control settings"),
+        (name = "Targets", description = "ARPA target acquisition and tracking"),
         (name = "Configuration", description = "Server and network configuration"),
         (name = "Stream", description = "Real-time WebSocket stream for control updates")
     ),
@@ -71,6 +74,7 @@ const RADAR_CONTROL_URI: &str =
         get_control_values,
         get_control_value,
         set_control_value,
+        acquire_target,
         control_stream_docs,
     ),
     components(schemas(
@@ -82,6 +86,9 @@ const RADAR_CONTROL_URI: &str =
         Interfaces,
         Capabilities,
         BareControlValue,
+        // Target acquisition types
+        AcquireTargetRequest,
+        AcquireTargetResponse,
         // WebSocket message types
         SignalKDelta,
         Subscription,
@@ -102,6 +109,7 @@ pub(crate) fn routes(axum: axum::Router<Web>) -> axum::Router<Web> {
             RADAR_CONTROL_URI,
             get(get_control_value).put(set_control_value),
         )
+        .route(RADAR_ACQUIRE_TARGET_URI, axum::routing::post(acquire_target))
         .route(OPENAPI_URI, get(openapi_json))
         .merge(SwaggerUi::new("/swagger-ui").config(SwaggerConfig::new([OPENAPI_URI])))
 }
@@ -560,6 +568,123 @@ async fn set_control_value(
     }
 
     StatusCode::OK.into_response()
+}
+
+// =============================================================================
+// Target Acquisition REST API Handler
+// =============================================================================
+
+/// Request body for manual target acquisition
+/// Supports two modes: lat/lon or bearing/distance from radar
+#[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "bearing": 0.7854,
+    "distance": 1852.0
+}))]
+struct AcquireTargetRequest {
+    /// Target bearing in radians true [0, 2π)
+    #[schema(example = 0.7854)]
+    bearing: Option<f64>,
+    /// Target distance in meters
+    #[schema(example = 1852.0)]
+    distance: Option<f64>,
+    /// Target latitude in decimal degrees (alternative to bearing/distance)
+    #[schema(example = 52.3702)]
+    latitude: Option<f64>,
+    /// Target longitude in decimal degrees (alternative to bearing/distance)
+    #[schema(example = 4.8952)]
+    longitude: Option<f64>,
+}
+
+/// Response for successful target acquisition
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "targetId": 1,
+    "radarId": "nav1034A"
+}))]
+struct AcquireTargetResponse {
+    /// Unique identifier for the acquired target
+    #[schema(example = 1)]
+    target_id: usize,
+    /// Radar that is tracking this target
+    #[schema(example = "nav1034A")]
+    radar_id: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/signalk/v2/api/vessels/self/radars/{radar_id}/targets/acquire",
+    summary = "Acquire a target at position",
+    description = "Manually acquire an ARPA target at the specified geographic position. \
+                   The target will be tracked and reported via the delta stream. \
+                   Use this for click-to-acquire functionality in the GUI.",
+    params(
+        ("radar_id" = String, Path, description = "Radar identifier", example = "nav1034A")
+    ),
+    request_body(
+        content = AcquireTargetRequest,
+        description = "Geographic position to acquire target at",
+        example = json!({"latitude": 52.3702, "longitude": 4.8952})
+    ),
+    responses(
+        (status = 200, body = AcquireTargetResponse, description = "Target acquired successfully"),
+        (status = 400, description = "Target tracking not enabled or invalid position"),
+        (status = 404, description = "Radar not found")
+    ),
+    tag = "Targets"
+)]
+async fn acquire_target(
+    Path(radar_id): Path<String>,
+    State(state): State<Web>,
+    extract::Json(request): extract::Json<AcquireTargetRequest>,
+) -> Response {
+    // Support two modes: bearing/distance or lat/lon
+    // Bearing is in radians
+    let result = if let (Some(bearing), Some(distance)) = (request.bearing, request.distance) {
+        log::info!(
+            "POST acquire target at bearing {:.1}° ({:.3} rad), distance {:.0}m for radar {}",
+            bearing.to_degrees(),
+            bearing,
+            distance,
+            radar_id
+        );
+        state.radars.acquire_target_at_bearing_distance(
+            &radar_id,
+            bearing,
+            distance,
+        )
+    } else if let (Some(lat), Some(lon)) = (request.latitude, request.longitude) {
+        log::info!(
+            "POST acquire target at ({:.6}, {:.6}) for radar {}",
+            lat,
+            lon,
+            radar_id
+        );
+        state.radars.acquire_target_at_position(
+            &radar_id,
+            lat,
+            lon,
+        )
+    } else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Either bearing/distance or latitude/longitude must be provided".to_string(),
+        )
+            .into_response();
+    };
+
+    match result {
+        Ok(target_id) => {
+            let response = AcquireTargetResponse {
+                target_id,
+                radar_id,
+            };
+            Json(response).into_response()
+        }
+        Err(e) => e.into_response(),
+    }
 }
 
 #[utoipa::path(

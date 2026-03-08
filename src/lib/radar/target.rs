@@ -48,7 +48,7 @@ pub struct ArpaTargetApi {
 #[derive(Serialize, Clone, Debug, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TargetPositionApi {
-    /// Bearing from radar in degrees true (0-360)
+    /// Bearing from radar in radians true [0, 2π)
     pub bearing: f64,
     /// Distance from radar in meters
     pub distance: f64,
@@ -63,7 +63,7 @@ pub struct TargetPositionApi {
 /// Target motion in the API format
 #[derive(Serialize, Clone, Debug, ToSchema)]
 pub struct TargetMotionApi {
-    /// Course over ground in degrees true
+    /// Course over ground in radians true [0, 2π)
     pub course: f64,
     /// Speed in m/s
     pub speed: f64,
@@ -78,7 +78,7 @@ pub struct TargetDangerApi {
     pub tcpa: f64,
 }
 
-const MIN_BLOB_PIXELS: usize = 10; // minimum number of pixels for a valid blob
+const MIN_BLOB_PIXELS: usize = 1000; // minimum number of pixels for a valid blob
 const MAX_BLOB_PIXELS: usize = 10000; // maximum blob size (radar interference protection)
 const MAX_LOST_COUNT: i32 = 12; // number of sweeps that target can be missed before it is set to lost
 const MAX_DETECTION_SPEED_KN: f64 = 40.;
@@ -193,11 +193,12 @@ impl DetectionGuardZone {
     }
 
     /// Check if an angle (in spokes) is within this guard zone
-    fn contains_angle(&self, angle: i32, spokes_per_revolution: i32) -> bool {
+    /// The angle should be in relative coordinates (relative to ship heading)
+    fn contains_angle(&self, relative_angle: i32, spokes_per_revolution: i32) -> bool {
         if !self.enabled {
             return false;
         }
-        let angle = angle.rem_euclid(spokes_per_revolution);
+        let angle = relative_angle.rem_euclid(spokes_per_revolution);
         if self.start_angle <= self.end_angle {
             angle >= self.start_angle && angle <= self.end_angle
         } else {
@@ -212,8 +213,19 @@ impl DetectionGuardZone {
     }
 
     /// Check if a position is within the guard zone
-    fn contains(&self, angle: i32, range: i32, spokes_per_revolution: i32) -> bool {
-        self.contains_angle(angle, spokes_per_revolution) && self.contains_range(range)
+    /// geographic_angle: the angle in geographic coordinates (0 = North)
+    /// heading: the ship's heading in spokes (to convert geographic to relative)
+    fn contains(
+        &self,
+        geographic_angle: i32,
+        range: i32,
+        spokes_per_revolution: i32,
+        heading: i32,
+    ) -> bool {
+        // Convert geographic angle to relative angle by subtracting heading
+        // Guard zone angles are stored relative to ship heading
+        let relative_angle = (geographic_angle - heading).rem_euclid(spokes_per_revolution);
+        self.contains_angle(relative_angle, spokes_per_revolution) && self.contains_range(range)
     }
 }
 
@@ -366,6 +378,8 @@ bitflags! {
         const RECEDING = 0b00010000;
         /// The value `CONTOUR`, at bit position `3`.
         const CONTOUR = 0b00001000;
+        /// The value `BLOB_EDGE`, at bit position `2` - marks edges of detected blobs for overlay
+        const BLOB_EDGE = 0b00000100;
 
         /// The default value for a new one.
         const INITIAL = Self::TARGET.bits() | Self::BACKUP.bits();
@@ -425,6 +439,9 @@ pub struct TargetBuffer {
 
     /// Previous angle for detecting revolution completion
     prev_angle: usize,
+
+    /// Current heading in spokes (updated each spoke, used for guard zone checks)
+    current_heading: i32,
 
     /// Blobs currently being built as spokes arrive
     blobs_in_progress: Vec<BlobInProgress>,
@@ -523,13 +540,13 @@ impl BlobInProgress {
 }
 
 #[derive(Debug, Clone)]
-struct Contour {
-    length: i32,
+pub(crate) struct Contour {
+    pub(crate) length: i32,
     min_angle: i32,
     max_angle: i32,
     min_r: i32,
     max_r: i32,
-    position: Polar,
+    pub(crate) position: Polar,
     contour: Vec<Polar>,
 }
 
@@ -583,13 +600,13 @@ pub(crate) struct ArpaTarget {
     pub(crate) m_target_id: usize,
     pub(crate) m_transferred_target: bool,
     m_kalman: KalmanFilter,
-    contour: Contour,
+    pub(crate) contour: Contour,
     m_total_pix: u32,
     m_approaching_pix: u32,
     m_receding_pix: u32,
     have_doppler: bool,
     pub(crate) position: ExtendedPosition,
-    expected: Polar,
+    pub(crate) expected: Polar,
     pub(crate) age_rotations: u32,
     /// Key of the radar that originally acquired this target
     pub(crate) source_radar: String,
@@ -1152,6 +1169,8 @@ impl TargetBuffer {
 
             prev_angle: 0,
 
+            current_heading: 0,
+
             blobs_in_progress: Vec::new(),
 
             sk_client_tx,
@@ -1211,10 +1230,10 @@ impl TargetBuffer {
     }
 
     /// Check if a position is within any enabled guard zone
-    fn is_in_guard_zone(&self, angle: i32, range: i32) -> bool {
+    fn is_in_guard_zone(&self, angle: i32, range: i32, heading: i32) -> bool {
         self.guard_zones
             .iter()
-            .any(|z| z.contains(angle, range, self.setup.spokes_per_revolution))
+            .any(|z| z.contains(angle, range, self.setup.spokes_per_revolution, heading))
     }
 
     pub fn set_rotation_speed(&mut self, ms: u32) {
@@ -1805,6 +1824,7 @@ impl TargetBuffer {
         time: u64,
         status: TargetStatus,
         doppler: &Doppler,
+        automatic: bool,
     ) {
         let epos = ExtendedPosition::new(own_pos.clone(), 0., 0., time, 0., 0.);
         let target_pos = self.setup.polar2pos(&pol, &epos);
@@ -1822,6 +1842,7 @@ impl TargetBuffer {
         // Set the contour position so refresh_targets can find this target
         target.contour.position = pol;
         target.expected = pol;
+        target.m_automatic = automatic;
 
         log::info!(
             "Target {} acquired: status={:?}, angle={}, range={}, lat={:.6}, lon={:.6}",
@@ -1930,14 +1951,24 @@ impl TargetBuffer {
         // When no bearing is available (no heading source), we fall back to relative angle
         // but ARPA tracking will not work correctly in this case.
         let weakest_normal_blob = legend.strong_return;
-        let angle = if let Some(bearing) = spoke.bearing {
-            bearing as usize
+        let spokes = self.setup.spokes_per_revolution;
+        let (angle, heading) = if let Some(bearing) = spoke.bearing {
+            // Geographic bearing available - calculate heading as difference
+            let heading = (bearing as i32 - spoke.angle as i32).rem_euclid(spokes);
+            (bearing as usize, heading)
         } else {
             // No heading available - fall back to relative angle (ARPA won't work correctly)
-            spoke.angle as usize
+            (spoke.angle as usize, 0)
         };
 
+        // Store heading for use by process_completed_blob
+        self.current_heading = heading;
+
         let background_on = self.setup.stationary; // TODO m_autolearning_on_off.GetValue() == 1;
+
+        // Overlay blob edges from previous rotation BEFORE clearing history
+        self.overlay_blob_edges(spoke, angle, legend);
+
         self.history.spokes[angle].time = time;
         self.history.spokes[angle].sweep.clear();
         self.history.spokes[angle].pos = pos;
@@ -1973,23 +2004,65 @@ impl TargetBuffer {
         }
 
         // Build blobs incrementally
-        self.process_blob_pixels(angle as i32, &strong_pixels, time, pos.clone());
+        self.process_blob_pixels(angle as i32, heading, &strong_pixels, time, pos.clone());
 
         self.refresh_targets(angle);
+    }
+
+    /// Overlay blob edge markers from history onto the spoke data
+    fn overlay_blob_edges(&self, spoke: &mut Spoke, angle: usize, legend: &Legend) {
+        if angle >= self.history.spokes.len() {
+            return;
+        }
+
+        let sweep = &self.history.spokes[angle].sweep;
+        let blob_edge_color = legend.target_border;
+
+        for (radius, pixel) in sweep.iter().enumerate() {
+            if pixel.contains(HistoryPixel::BLOB_EDGE) && radius < spoke.data.len() {
+                spoke.data[radius] = blob_edge_color;
+            }
+        }
     }
 
     /// Process strong pixels from a spoke and update blobs in progress
     fn process_blob_pixels(
         &mut self,
         angle: i32,
+        heading: i32,
         strong_pixels: &[i32],
         time: u64,
         pos: GeoPosition,
     ) {
         let spokes = self.setup.spokes_per_revolution;
 
-        // Check if any guard zone is enabled
+        // Check if any guard zone is enabled - automatic target acquisition ONLY happens
+        // within enabled guard zones (matching C++ radar_pi behavior)
         let guard_zone_active = self.guard_zones[0].enabled || self.guard_zones[1].enabled;
+
+        // Log guard zone state once per rotation (at angle 0)
+        if angle == 0 {
+            log::debug!(
+                "Guard zone state: active={}, zone0_enabled={}, zone0 angles {}..{} range {}..{}, zone1_enabled={}",
+                guard_zone_active,
+                self.guard_zones[0].enabled,
+                self.guard_zones[0].start_angle,
+                self.guard_zones[0].end_angle,
+                self.guard_zones[0].inner_range,
+                self.guard_zones[0].outer_range,
+                self.guard_zones[1].enabled
+            );
+        }
+
+        // No automatic target acquisition without guard zones
+        if !guard_zone_active {
+            // Complete any in-progress blobs before returning
+            if !self.blobs_in_progress.is_empty() {
+                self.complete_all_blobs();
+            }
+            self.prev_angle = angle as usize;
+            return;
+        }
 
         // Handle angle wraparound - complete all blobs when we wrap
         if !self.blobs_in_progress.is_empty() {
@@ -2006,17 +2079,15 @@ impl TargetBuffer {
         let mut current_run: Vec<i32> = Vec::new();
 
         for &r in strong_pixels {
-            // Check if pixel is in a guard zone (if any are enabled)
-            if guard_zone_active {
-                let in_zone = self.guard_zones[0].contains(angle, r, spokes)
-                    || self.guard_zones[1].contains(angle, r, spokes);
-                if !in_zone {
-                    // End current run if any
-                    if !current_run.is_empty() {
-                        runs.push(std::mem::take(&mut current_run));
-                    }
-                    continue;
+            // Check if pixel is in a guard zone
+            let in_zone = self.guard_zones[0].contains(angle, r, spokes, heading)
+                || self.guard_zones[1].contains(angle, r, spokes, heading);
+            if !in_zone {
+                // End current run if any
+                if !current_run.is_empty() {
+                    runs.push(std::mem::take(&mut current_run));
                 }
+                continue;
             }
 
             // Check if this pixel is adjacent to the last pixel in current run
@@ -2152,12 +2223,13 @@ impl TargetBuffer {
 
         let (center_angle, center_r) = blob.center();
         let spokes = self.setup.spokes_per_revolution;
+        let heading = self.current_heading;
 
         // Verify blob is within guard zone (if enabled)
         let guard_zone_active = self.guard_zones[0].enabled || self.guard_zones[1].enabled;
         if guard_zone_active {
-            let in_zone0 = self.guard_zones[0].contains(center_angle, center_r, spokes);
-            let in_zone1 = self.guard_zones[1].contains(center_angle, center_r, spokes);
+            let in_zone0 = self.guard_zones[0].contains(center_angle, center_r, spokes, heading);
+            let in_zone1 = self.guard_zones[1].contains(center_angle, center_r, spokes, heading);
             if !in_zone0 && !in_zone1 {
                 log::warn!(
                     "Blob outside guard zones! center=({}, {}), zone0={}..{}/{}..{}, zone1={}..{}/{}..{}",
@@ -2176,28 +2248,102 @@ impl TargetBuffer {
             }
         }
 
+        // Get the ship position at the center angle from history
+        // This is more accurate than blob.start_pos which is from when the blob started
+        let center_angle_idx = (center_angle as usize) % self.history.spokes.len();
+        let center_pos = self.history.spokes[center_angle_idx].pos.clone();
+        let center_time = self.history.spokes[center_angle_idx].time;
+
         log::info!(
-            "Blob detected: {} pixels, center=({}, {}), range={}..{}, angles={}..{}",
+            "Blob detected: {} pixels, center=({}, {}), range={}..{}, angles={}..{}, pos=({:.6}, {:.6})",
             blob.pixel_count,
             center_angle,
             center_r,
             blob.min_r,
             blob.max_r,
             blob.min_angle,
-            blob.max_angle
+            blob.max_angle,
+            center_pos.lat,
+            center_pos.lon
         );
 
-        // Create a Polar position for the blob center
-        let pol = Polar::new(center_angle, center_r, blob.start_time);
+        // Mark blob edges in history for overlay visualization
+        self.mark_blob_edges(&blob);
 
-        // Pass to target acquisition
-        self.acquire_or_match_blob(blob, pol);
+        // Create a Polar position for the blob center
+        let pol = Polar::new(center_angle, center_r, center_time);
+
+        // Pass to target acquisition with the ship position at the center angle
+        self.acquire_or_match_blob(pol, center_pos);
+    }
+
+    /// Mark the entire blob area in the history array for visualization overlay
+    fn mark_blob_edges(&mut self, blob: &BlobInProgress) {
+        let spokes = self.setup.spokes_per_revolution as usize;
+        log::debug!(
+            "mark_blob_edges: blob angle=[{}..{}] r=[{}..{}]",
+            blob.min_angle,
+            blob.max_angle,
+            blob.min_r,
+            blob.max_r
+        );
+
+        // Fill the entire blob bounding box
+        for angle in blob.min_angle..=blob.max_angle {
+            let a = (angle as usize) % spokes;
+            if a >= self.history.spokes.len() {
+                continue;
+            }
+            let sweep_len = self.history.spokes[a].sweep.len();
+
+            // Mark all pixels from min_r to max_r
+            for r in blob.min_r..=blob.max_r {
+                let r_idx = r as usize;
+                if r_idx < sweep_len {
+                    self.history.spokes[a].sweep[r_idx].insert(HistoryPixel::BLOB_EDGE);
+                }
+            }
+        }
     }
 
     /// Try to match blob to existing target, or acquire as new target
-    fn acquire_or_match_blob(&mut self, blob: BlobInProgress, pol: Polar) {
-        // For now, just acquire as new target
-        // TODO: Match against existing targets based on predicted position
+    fn acquire_or_match_blob(&mut self, pol: Polar, center_pos: GeoPosition) {
+        // Search radius for matching blobs to targets (in pixels)
+        // This should be larger than typical target movement between sweeps
+        const MATCH_RADIUS: i32 = 20;
+
+        // Check if blob matches any existing target's expected position
+        let targets = self.targets.read().unwrap();
+        let spokes = self.setup.spokes_per_revolution;
+
+        for (target_id, target) in targets.iter() {
+            if target.m_status == TargetStatus::Lost {
+                continue;
+            }
+
+            // Calculate distance from blob center to target's expected position
+            let angle_diff = (pol.angle - target.expected.angle).abs();
+            let angle_diff = angle_diff.min(spokes - angle_diff); // Handle wrap-around
+            let range_diff = (pol.r - target.expected.r).abs();
+
+            // Check if within search radius (use squared distance for efficiency)
+            let dist_sq = angle_diff * angle_diff + range_diff * range_diff;
+            if dist_sq <= MATCH_RADIUS * MATCH_RADIUS {
+                log::debug!(
+                    "Blob matches existing target {}: blob=({},{}), expected=({},{}), dist={}",
+                    target_id,
+                    pol.angle,
+                    pol.r,
+                    target.expected.angle,
+                    target.expected.r,
+                    (dist_sq as f64).sqrt()
+                );
+                // Blob matches an existing target - don't create a new one
+                // The target will be refreshed in the normal refresh cycle
+                return;
+            }
+        }
+        drop(targets); // Release the lock before acquiring a new target
 
         if self.target_count() >= MAX_NUMBER_OF_TARGETS - 1 {
             log::debug!("Maximum number of targets reached, ignoring blob");
@@ -2206,10 +2352,11 @@ impl TargetBuffer {
 
         self.acquire_new_arpa_target(
             pol,
-            blob.start_pos,
-            blob.start_time,
+            center_pos,
+            pol.time,
             TargetStatus::Acquire0,
             &Doppler::Any,
+            true, // automatic: detected by guard zone/blob
         );
     }
 }
@@ -3184,17 +3331,15 @@ impl ArpaTarget {
             * radar_position.lat.to_radians().cos();
 
         let distance = (dlat * dlat + dlon * dlon).sqrt() * METERS_PER_DEGREE_LATITUDE;
-        let bearing_rad = dlon.atan2(dlat);
-        let mut bearing = bearing_rad.to_degrees();
+        let mut bearing = dlon.atan2(dlat); // radians
         if bearing < 0.0 {
-            bearing += 360.0;
+            bearing += 2.0 * PI;
         }
 
-        // Calculate course from velocity components
-        let course_rad = self.position.dlon_dt.atan2(self.position.dlat_dt);
-        let mut course = course_rad.to_degrees();
+        // Calculate course from velocity components (in radians)
+        let mut course = self.position.dlon_dt.atan2(self.position.dlat_dt);
         if course < 0.0 {
-            course += 360.0;
+            course += 2.0 * PI;
         }
 
         // Speed: convert from knots to m/s

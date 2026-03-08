@@ -11,12 +11,15 @@ import {
   registerRadarCallback,
   registerControlCallback,
   registerStreamMessageCallback,
+  registerAcquireTargetModeCallback,
   getOperatingTime,
   getUserName,
   togglePower,
   zoomIn,
   zoomOut,
   getCurrentRangeDisplay,
+  isAcquireTargetMode,
+  acquireTargetAtPosition,
 } from "./control.js";
 import { isStandaloneMode, detectMode } from "./api.js";
 import "./protobuf/protobuf.min.js";
@@ -92,6 +95,18 @@ window.onload = async function () {
   // Debug: expose ppi globally for console debugging
   window.ppi = ppi;
   window.renderer = ppi; // Backwards compatibility
+
+  // Register acquire target mode callback
+  registerAcquireTargetModeCallback((enabled) => {
+    console.log(`Viewer: acquire target mode callback called with enabled=${enabled}`);
+    ppi.setAcquireTargetMode(enabled, async (bearing, distance) => {
+      console.log(`Viewer: Acquiring target at bearing ${bearing.toFixed(1)}°, distance ${distance.toFixed(0)}m`);
+      const result = await acquireTargetAtPosition(bearing, distance);
+      if (result) {
+        console.log(`Target ${result.targetId} acquired successfully`);
+      }
+    });
+  });
 
   // Process any pending radar data that arrived before renderer was ready
   if (pendingRadarData) {
@@ -611,11 +626,14 @@ function controlUpdate(controlId, value) {
 
 // Handle stream messages (targets, navigation, etc.)
 function handleStreamMessage(path, value) {
+  console.log(`handleStreamMessage: path=${path}`, value);
   // Handle target updates: radars.{id}.targets.{targetId}
   if (path.includes(".targets.")) {
     const parts = path.split(".");
+    console.log(`Target path parts:`, parts);
     if (parts.length >= 4 && parts[2] === "targets") {
       const targetId = parseInt(parts[3]);
+      console.log(`Target update for id=${targetId}, ppi=${!!ppi}`);
       if (ppi) {
         if (value === null) {
           // Target lost

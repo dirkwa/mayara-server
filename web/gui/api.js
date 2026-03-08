@@ -184,6 +184,49 @@ export function isStandaloneMode() {
 }
 
 /**
+ * Acquire a target at the specified bearing and distance from radar
+ *
+ * @param {string} radarId - The radar ID
+ * @param {number} bearing - Target bearing in radians true [0, 2π)
+ * @param {number} distance - Target distance in meters
+ * @returns {Promise<{targetId: number, radarId: string}|null>} Target info or null on failure
+ */
+export async function acquireTarget(radarId, bearing, distance) {
+  await detectMode();
+
+  const url = `${getRadarsPath()}/${radarId}/targets/acquire`;
+  const body = { bearing, distance };
+
+  console.log(`Acquiring target: POST ${url}`, body);
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+      console.log(`Target acquired: ${result.targetId}`);
+      return result;
+    } else {
+      const errorText = await response.text();
+      console.error(
+        `Target acquisition failed: ${response.status} ${response.statusText}`,
+        errorText
+      );
+      return null;
+    }
+  } catch (e) {
+    console.error(`Target acquisition error: ${e}`);
+    return null;
+  }
+}
+
+/**
  * Send a control command to a radar via REST API (v5 format)
  *
  * SignalK Radar API v5 format:

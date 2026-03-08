@@ -176,6 +176,26 @@ impl GeoPosition {
     pub fn new(lat: f64, lon: f64) -> Self {
         GeoPosition { lat, lon }
     }
+
+    /// Calculate a new position from this position given a bearing and distance
+    /// bearing: bearing in radians (0 = north, clockwise positive)
+    /// distance: distance in meters
+    pub fn position_from_bearing(&self, bearing: f64, distance: f64) -> GeoPosition {
+        const EARTH_RADIUS: f64 = 6_371_000.0; // meters
+
+        let lat1 = self.lat.to_radians();
+        let lon1 = self.lon.to_radians();
+        let d = distance / EARTH_RADIUS;
+
+        let lat2 = (lat1.sin() * d.cos() + lat1.cos() * d.sin() * bearing.cos()).asin();
+        let lon2 =
+            lon1 + (bearing.sin() * d.sin() * lat1.cos()).atan2(d.cos() - lat1.sin() * lat2.sin());
+
+        GeoPosition {
+            lat: lat2.to_degrees(),
+            lon: lon2.to_degrees(),
+        }
+    }
 }
 
 impl fmt::Display for GeoPosition {
@@ -497,6 +517,84 @@ impl SharedRadars {
         };
 
         (short, long)
+    }
+
+    /// Acquire a manual target at the specified geographic position
+    /// Returns the target ID on success
+    pub fn acquire_target_at_position(
+        &self,
+        radar_key: &str,
+        lat: f64,
+        lon: f64,
+    ) -> Result<usize, RadarError> {
+        let radars = self.radars.read().unwrap();
+
+        // Check if target manager exists
+        let target_manager = match radars.target_manager.as_ref() {
+            Some(tm) => tm,
+            None => {
+                return Err(RadarError::InvalidControlId(
+                    "Target tracking not enabled".to_string(),
+                ))
+            }
+        };
+
+        // Get radar info to get spokes_per_revolution
+        let radar_info = radars
+            .info
+            .get(radar_key)
+            .ok_or_else(|| RadarError::NoSuchRadar(radar_key.to_string()))?;
+
+        let spokes_per_revolution = radar_info.spokes_per_revolution as usize;
+        let have_doppler = radar_info.doppler;
+
+        // Create extended position with current time
+        let pos = GeoPosition::new(lat, lon);
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let ext_pos = target::ExtendedPosition::new(pos, 0., 0., time, 0., 0.);
+
+        // Acquire the target
+        let target_id = target_manager.acquire_target(
+            radar_key,
+            ext_pos,
+            target::Doppler::Any,
+            spokes_per_revolution,
+            have_doppler,
+        );
+
+        log::info!(
+            "Manual target {} acquired at ({:.6}, {:.6}) for radar '{}'",
+            target_id,
+            lat,
+            lon,
+            radar_key
+        );
+
+        Ok(target_id)
+    }
+
+    /// Acquire a manual target at the specified bearing (radians) and distance from radar
+    /// Returns the target ID on success
+    pub fn acquire_target_at_bearing_distance(
+        &self,
+        radar_key: &str,
+        bearing_rad: f64,
+        distance_m: f64,
+    ) -> Result<usize, RadarError> {
+        // Get radar position from navigation data
+        let radar_pos = crate::navdata::get_radar_position().ok_or_else(|| {
+            RadarError::InvalidControlId("No radar position available".to_string())
+        })?;
+
+        // Calculate target position from bearing and distance
+        let target_pos = radar_pos.position_from_bearing(bearing_rad, distance_m);
+
+        // Use the lat/lon method
+        self.acquire_target_at_position(radar_key, target_pos.lat, target_pos.lon)
     }
 
     // A radar has been found
@@ -831,10 +929,10 @@ fn default_legend(targets: &TargetMode, doppler: bool, pixel_values: u8) -> Lege
         legend.pixels.push(Lookup {
             r#type: PixelType::TargetBorder,
             color: Color {
-                r: 200,
-                g: 200,
-                b: 200,
-                a: OPAQUE,
+                r: 255,
+                g: 255,
+                b: 0,
+                a: 128, // 50% transparent
             },
         });
     }
