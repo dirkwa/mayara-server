@@ -652,9 +652,9 @@ class PPI {
     const radius = this.beam_length * 3;
     if (radius <= 0) return;
 
-    // Apply heading rotation for north-up mode
-    const startAngle = sector.startAngle - Math.PI / 2 - this.headingRotation;
-    const endAngle = sector.endAngle - Math.PI / 2 - this.headingRotation;
+    // Apply heading rotation (positive = clockwise on screen, matching radar image rotation)
+    const startAngle = sector.startAngle + this.headingRotation - Math.PI / 2;
+    const endAngle = sector.endAngle + this.headingRotation - Math.PI / 2;
     const isCircle = Math.abs(sector.endAngle - sector.startAngle) < 0.001;
 
     ctx.beginPath();
@@ -685,9 +685,9 @@ class PPI {
 
     if (outerRadius <= 0) return;
 
-    // Apply heading rotation for north-up mode
-    const startAngle = zone.startAngle - Math.PI / 2 - this.headingRotation;
-    const endAngle = zone.endAngle - Math.PI / 2 - this.headingRotation;
+    // Apply heading rotation (positive = clockwise on screen, matching radar image rotation)
+    const startAngle = zone.startAngle + this.headingRotation - Math.PI / 2;
+    const endAngle = zone.endAngle + this.headingRotation - Math.PI / 2;
     const isCircle = Math.abs(zone.endAngle - zone.startAngle) < 0.001;
 
     ctx.beginPath();
@@ -753,8 +753,8 @@ class PPI {
     const distance = target.position.distance;
     const pixelDist = distance * pixelsPerMeter;
 
-    // Apply heading rotation if in north-up mode
-    const adjustedBearing = bearingRad - this.headingRotation;
+    // Apply heading rotation (positive = clockwise on screen, matching radar image rotation)
+    const adjustedBearing = bearingRad + this.headingRotation;
 
     // Convert polar to cartesian (bearing is clockwise from north)
     const x = this.center_x + pixelDist * Math.sin(adjustedBearing);
@@ -805,7 +805,7 @@ class PPI {
 
     // Draw velocity vector if we have motion data
     if (target.motion && target.status === "tracking") {
-      const courseRad = (target.motion.course * Math.PI) / 180 - this.headingRotation;
+      const courseRad = (target.motion.course * Math.PI) / 180 + this.headingRotation;
       const speed = target.motion.speed; // m/s
 
       // Scale vector length: 1 minute of travel
@@ -1005,7 +1005,14 @@ class PPI {
   #pixelToRadarCoords(x, y) {
     const dx = x - this.center_x;
     const dy = y - this.center_y;
-    const angle = Math.atan2(dx, -dy);
+    // Calculate angle in screen coordinates
+    let angle = Math.atan2(dx, -dy);
+    // Subtract heading rotation to convert from screen to radar coordinates
+    // (screen angle = radar angle + headingRotation, so radar angle = screen angle - headingRotation)
+    angle -= this.headingRotation;
+    // Normalize angle to [-PI, PI]
+    while (angle > Math.PI) angle -= 2 * Math.PI;
+    while (angle < -Math.PI) angle += 2 * Math.PI;
     const pixelDist = Math.sqrt(dx * dx + dy * dy);
     const range = this.range || this.actual_range;
     const pixelsPerMeter = range > 0 ? this.beam_length / range : 1;
@@ -1024,27 +1031,32 @@ class PPI {
     const outerRadius = zone.endDistance * pixelsPerMeter;
     const midRadius = (innerRadius + outerRadius) / 2;
 
+    // Apply heading rotation (positive = clockwise on screen, matching radar image rotation)
+    const rotatedStartAngle = zone.startAngle + this.headingRotation;
+    const rotatedEndAngle = zone.endAngle + this.headingRotation;
+
     let midAngle = (zone.startAngle + zone.endAngle) / 2;
     if (zone.endAngle < zone.startAngle) {
       midAngle = (zone.startAngle + zone.endAngle + 2 * Math.PI) / 2;
       if (midAngle > Math.PI) midAngle -= 2 * Math.PI;
     }
+    const rotatedMidAngle = midAngle + this.headingRotation;
 
-    const startAngleX = this.center_x + midRadius * Math.sin(zone.startAngle);
-    const startAngleY = this.center_y - midRadius * Math.cos(zone.startAngle);
-    const endAngleX = this.center_x + midRadius * Math.sin(zone.endAngle);
-    const endAngleY = this.center_y - midRadius * Math.cos(zone.endAngle);
+    const startAngleX = this.center_x + midRadius * Math.sin(rotatedStartAngle);
+    const startAngleY = this.center_y - midRadius * Math.cos(rotatedStartAngle);
+    const endAngleX = this.center_x + midRadius * Math.sin(rotatedEndAngle);
+    const endAngleY = this.center_y - midRadius * Math.cos(rotatedEndAngle);
 
-    const innerDistX = this.center_x + innerRadius * Math.sin(midAngle);
-    const innerDistY = this.center_y - innerRadius * Math.cos(midAngle);
-    const outerDistX = this.center_x + outerRadius * Math.sin(midAngle);
-    const outerDistY = this.center_y - outerRadius * Math.cos(midAngle);
+    const innerDistX = this.center_x + innerRadius * Math.sin(rotatedMidAngle);
+    const innerDistY = this.center_y - innerRadius * Math.cos(rotatedMidAngle);
+    const outerDistX = this.center_x + outerRadius * Math.sin(rotatedMidAngle);
+    const outerDistY = this.center_y - outerRadius * Math.cos(rotatedMidAngle);
 
     return {
-      startAngle: { x: startAngleX, y: startAngleY, angle: zone.startAngle },
-      endAngle: { x: endAngleX, y: endAngleY, angle: zone.endAngle },
-      innerDist: { x: innerDistX, y: innerDistY, radius: innerRadius, midAngle },
-      outerDist: { x: outerDistX, y: outerDistY, radius: outerRadius, midAngle },
+      startAngle: { x: startAngleX, y: startAngleY, angle: rotatedStartAngle },
+      endAngle: { x: endAngleX, y: endAngleY, angle: rotatedEndAngle },
+      innerDist: { x: innerDistX, y: innerDistY, radius: innerRadius, midAngle: rotatedMidAngle },
+      outerDist: { x: outerDistX, y: outerDistY, radius: outerRadius, midAngle: rotatedMidAngle },
     };
   }
 
@@ -1054,14 +1066,18 @@ class PPI {
     const handleRadius = this.beam_length * 0.5;
     if (handleRadius <= 0) return null;
 
-    const startAngleX = this.center_x + handleRadius * Math.sin(sector.startAngle);
-    const startAngleY = this.center_y - handleRadius * Math.cos(sector.startAngle);
-    const endAngleX = this.center_x + handleRadius * Math.sin(sector.endAngle);
-    const endAngleY = this.center_y - handleRadius * Math.cos(sector.endAngle);
+    // Apply heading rotation (positive = clockwise on screen, matching radar image rotation)
+    const rotatedStartAngle = sector.startAngle + this.headingRotation;
+    const rotatedEndAngle = sector.endAngle + this.headingRotation;
+
+    const startAngleX = this.center_x + handleRadius * Math.sin(rotatedStartAngle);
+    const startAngleY = this.center_y - handleRadius * Math.cos(rotatedStartAngle);
+    const endAngleX = this.center_x + handleRadius * Math.sin(rotatedEndAngle);
+    const endAngleY = this.center_y - handleRadius * Math.cos(rotatedEndAngle);
 
     return {
-      startAngle: { x: startAngleX, y: startAngleY, angle: sector.startAngle },
-      endAngle: { x: endAngleX, y: endAngleY, angle: sector.endAngle },
+      startAngle: { x: startAngleX, y: startAngleY, angle: rotatedStartAngle },
+      endAngle: { x: endAngleX, y: endAngleY, angle: rotatedEndAngle },
     };
   }
 
