@@ -270,6 +270,23 @@ impl ArpaDetector {
             .any(|z| z.contains(angle, range, spokes, heading))
     }
 
+    /// Get which guard zone (1 or 2) contains the position, or 0 if none
+    pub(crate) fn get_containing_zone(
+        &self,
+        angle: i32,
+        range: i32,
+        heading: i32,
+        spokes: i32,
+    ) -> u8 {
+        if self.guard_zones[0].contains(angle, range, spokes, heading) {
+            1
+        } else if self.guard_zones[1].contains(angle, range, spokes, heading) {
+            2
+        } else {
+            0
+        }
+    }
+
     /// Recalculate guard zones when pixels_per_meter changes
     pub(crate) fn recalculate_zones(&mut self, spokes_per_revolution: i32, pixels_per_meter: f64) {
         for zone in &mut self.guard_zones {

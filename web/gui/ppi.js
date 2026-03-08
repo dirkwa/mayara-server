@@ -877,33 +877,36 @@ class PPI {
     ctx.textBaseline = "top";
     ctx.fillText(`T${id}`, x + targetRadius + 4, y - targetRadius);
 
-    // Draw CPA/TCPA info if available and target is tracking
+    // Draw CPA/TCPA info only if values are set (non-zero) and target is tracking
     if (target.danger && target.status === "tracking") {
       const cpa = target.danger.cpa;
       const tcpa = target.danger.tcpa;
 
-      ctx.font = "10px/1 Verdana, Geneva, sans-serif";
+      // Only show if at least one value is set
+      if (cpa > 0 || tcpa > 0) {
+        ctx.font = "10px/1 Verdana, Geneva, sans-serif";
+        let yOffset = 13;
 
-      // Format CPA (in meters or nm)
-      let cpaText;
-      if (cpa >= 1852) {
-        cpaText = `CPA: ${(cpa / 1852).toFixed(2)} nm`;
-      } else {
-        cpaText = `CPA: ${Math.round(cpa)} m`;
+        // Format and show CPA (in meters or nm) only if set
+        if (cpa > 0) {
+          let cpaText;
+          if (cpa >= 1852) {
+            cpaText = `CPA: ${(cpa / 1852).toFixed(2)} nm`;
+          } else {
+            cpaText = `CPA: ${Math.round(cpa)} m`;
+          }
+          ctx.fillText(cpaText, x + targetRadius + 4, y - targetRadius + yOffset);
+          yOffset += 11;
+        }
+
+        // Format and show TCPA (in minutes:seconds) only if set
+        if (tcpa > 0) {
+          const minutes = Math.floor(tcpa / 60);
+          const seconds = Math.round(tcpa % 60);
+          const tcpaText = `TCPA: ${minutes}:${seconds.toString().padStart(2, "0")}`;
+          ctx.fillText(tcpaText, x + targetRadius + 4, y - targetRadius + yOffset);
+        }
       }
-
-      // Format TCPA (in minutes:seconds)
-      let tcpaText;
-      if (tcpa > 0) {
-        const minutes = Math.floor(tcpa / 60);
-        const seconds = Math.round(tcpa % 60);
-        tcpaText = `TCPA: ${minutes}:${seconds.toString().padStart(2, "0")}`;
-      } else {
-        tcpaText = "TCPA: --:--";
-      }
-
-      ctx.fillText(cpaText, x + targetRadius + 4, y - targetRadius + 13);
-      ctx.fillText(tcpaText, x + targetRadius + 4, y - targetRadius + 24);
     }
 
     ctx.restore();

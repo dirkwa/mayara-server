@@ -42,6 +42,9 @@ pub struct ArpaTargetApi {
     pub danger: TargetDangerApi,
     /// How target was acquired: "auto" or "manual"
     pub acquisition: String,
+    /// Which guard zone acquired this target (1 or 2), or 0 for manual
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_zone: Option<u8>,
 }
 
 /// Target position in the API format
@@ -385,6 +388,8 @@ pub(crate) struct ArpaTarget {
     lost_count: i32,
     refresh_time: u64,
     automatic: bool,
+    /// Which guard zone (1 or 2) acquired this target, or 0 for manual/none
+    source_zone: u8,
     radar_pos: GeoPosition,
     course: f64,
     stationary: i32,
@@ -1628,6 +1633,7 @@ impl TargetBuffer {
         status: TargetStatus,
         doppler: &Doppler,
         automatic: bool,
+        source_zone: u8,
     ) {
         let epos = ExtendedPosition::new(own_pos.clone(), 0., 0., time, 0., 0.);
         let target_pos = self.setup.polar2pos(&pol, &epos);
@@ -1646,6 +1652,7 @@ impl TargetBuffer {
         target.contour.position = pol;
         target.expected = pol;
         target.automatic = automatic;
+        target.source_zone = source_zone;
 
         log::info!(
             "Target {} acquired: status={:?}, angle={}, range={}, lat={:.6}, lon={:.6}",
@@ -1890,20 +1897,19 @@ impl TargetBuffer {
         let spokes = self.setup.spokes_per_revolution;
         let heading = self.arpa_detector.current_heading;
 
-        // Verify blob is within guard zone (if enabled)
-        let guard_zone_active = self.arpa_detector.has_active_guard_zone();
-        if guard_zone_active {
-            let in_zone =
-                self.arpa_detector
-                    .is_in_guard_zone(center_angle, center_r, heading, spokes);
-            if !in_zone {
-                log::warn!(
-                    "Blob outside guard zones! center=({}, {})",
-                    center_angle,
-                    center_r
-                );
-                return;
-            }
+        // Determine which guard zone (if any) contains this blob
+        let source_zone = self
+            .arpa_detector
+            .get_containing_zone(center_angle, center_r, heading, spokes);
+
+        // Verify blob is within a guard zone
+        if source_zone == 0 {
+            log::warn!(
+                "Blob outside guard zones! center=({}, {})",
+                center_angle,
+                center_r
+            );
+            return;
         }
 
         // Get the ship position at the center angle from history
@@ -1932,7 +1938,7 @@ impl TargetBuffer {
         let pol = Polar::new(center_angle, center_r, center_time);
 
         // Pass to target acquisition with the ship position at the center angle
-        self.acquire_or_match_blob(pol, center_pos);
+        self.acquire_or_match_blob(pol, center_pos, source_zone);
     }
 
     /// Mark the entire blob area in the history array for visualization overlay
@@ -1965,7 +1971,7 @@ impl TargetBuffer {
     }
 
     /// Try to match blob to existing target, or acquire as new target
-    fn acquire_or_match_blob(&mut self, pol: Polar, center_pos: GeoPosition) {
+    fn acquire_or_match_blob(&mut self, pol: Polar, center_pos: GeoPosition, source_zone: u8) {
         // Search radius for matching blobs to targets (in pixels)
         // This should be larger than typical target movement between sweeps
         const MATCH_RADIUS: i32 = 20;
@@ -2014,7 +2020,8 @@ impl TargetBuffer {
             pol.time,
             TargetStatus::Acquire0,
             &Doppler::Any,
-            true, // automatic: detected by guard zone/blob
+            true,        // automatic: detected by guard zone/blob
+            source_zone, // which guard zone detected this target
         );
     }
 }
@@ -2051,6 +2058,7 @@ impl ArpaTarget {
             lost_count: 0,
             refresh_time: 0,
             automatic: false,
+            source_zone: 0,
             radar_pos: radar_pos,
             course: 0.,
             stationary: 0,
@@ -3046,6 +3054,11 @@ impl ArpaTarget {
                 "auto".to_string()
             } else {
                 "manual".to_string()
+            },
+            source_zone: if self.source_zone > 0 {
+                Some(self.source_zone)
+            } else {
+                None
             },
         }
     }

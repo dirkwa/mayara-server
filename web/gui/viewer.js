@@ -139,6 +139,9 @@ window.onload = async function () {
   // Create power lozenge
   createPowerLozenge();
 
+  // Create speaker lozenge (audio alerts toggle)
+  createSpeakerLozenge();
+
   // Create range lozenge
   createRangeLozenge();
 
@@ -453,6 +456,70 @@ function updatePowerLozenge(powerState, userName) {
   }
 }
 
+// Audio alerts state
+let audioAlertsEnabled = true;
+const audioCache = {};
+
+// Create the speaker lozenge on the viewer (to the right of power lozenge)
+function createSpeakerLozenge() {
+  const container = document.querySelector(".myr_ppi");
+  if (!container) return;
+
+  const lozenge = document.createElement("div");
+  lozenge.id = "myr_speaker_lozenge";
+  lozenge.className = "myr_speaker_lozenge myr_speaker_on";
+  lozenge.title = "Click to toggle audio alerts";
+
+  const speakerBtn = document.createElement("button");
+  speakerBtn.className = "myr_speaker_lozenge_button";
+  speakerBtn.innerHTML = `<svg class="myr_speaker_icon" viewBox="0 0 24 24">
+    <path d="M11 5L6 9H2v6h4l5 4V5z"/>
+    <path class="myr_speaker_waves" d="M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14"/>
+  </svg>`;
+  speakerBtn.addEventListener("click", () => {
+    toggleAudioAlerts();
+  });
+
+  lozenge.appendChild(speakerBtn);
+  container.appendChild(lozenge);
+}
+
+// Toggle audio alerts on/off
+function toggleAudioAlerts() {
+  audioAlertsEnabled = !audioAlertsEnabled;
+  updateSpeakerLozenge();
+}
+
+// Update the speaker lozenge visual state
+function updateSpeakerLozenge() {
+  const lozenge = document.getElementById("myr_speaker_lozenge");
+  if (!lozenge) return;
+
+  lozenge.classList.remove("myr_speaker_on", "myr_speaker_off");
+  if (audioAlertsEnabled) {
+    lozenge.classList.add("myr_speaker_on");
+  } else {
+    lozenge.classList.add("myr_speaker_off");
+  }
+}
+
+// Play an audio alert
+function playAudioAlert(alertName) {
+  if (!audioAlertsEnabled) return;
+
+  // Cache audio objects for reuse
+  if (!audioCache[alertName]) {
+    audioCache[alertName] = new Audio(`audio/${alertName}.mp3`);
+  }
+
+  const audio = audioCache[alertName];
+  // Reset to start if already playing
+  audio.currentTime = 0;
+  audio.play().catch((e) => {
+    console.warn(`Failed to play audio alert "${alertName}":`, e);
+  });
+}
+
 // Create the range lozenge on the viewer
 function createRangeLozenge() {
   const container = document.querySelector(".myr_ppi");
@@ -755,6 +822,9 @@ function controlUpdate(controlId, value) {
   }
 }
 
+// Track known targets to detect new acquisitions
+const knownTargets = new Set();
+
 // Handle stream messages (targets, navigation, etc.)
 function handleStreamMessage(path, value) {
   // Handle target updates: radars.{id}.targets.{targetId}
@@ -766,7 +836,19 @@ function handleStreamMessage(path, value) {
         if (value === null) {
           // Target lost
           ppi.removeTarget(targetId);
+          knownTargets.delete(targetId);
         } else {
+          // Check if this is a NEW automatic target (guard zone detection)
+          if (!knownTargets.has(targetId) && value.sourceZone) {
+            // Play audio alert for the specific guard zone
+            if (value.sourceZone === 1) {
+              playAudioAlert("guard_zone_1");
+            } else if (value.sourceZone === 2) {
+              playAudioAlert("guard_zone_2");
+            }
+          }
+          knownTargets.add(targetId);
+
           // Target update
           ppi.updateTarget(targetId, value);
         }
