@@ -10,7 +10,7 @@ use std::{
     net::SocketAddr,
     pin::Pin,
     sync::{
-        OnceLock,
+        OnceLock, RwLock,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -22,6 +22,7 @@ use tokio_graceful_shutdown::SubsystemHandle;
 
 use crate::{
     Cli,
+    ais::AisVesselStore,
     radar::{GeoPosition, RadarError},
     stream::SignalKDelta,
 };
@@ -48,6 +49,49 @@ fn broadcast_nav_update(path: &str, value: f64, source: &str) {
         delta.add_navigation_update(path, value, source);
         // Ignore send errors (no subscribers)
         let _ = tx.send(delta);
+    }
+}
+
+/// Own-ship context detected from Signal K server (when pass_ais is enabled)
+static OWN_SHIP_CONTEXT: OnceLock<RwLock<Option<String>>> = OnceLock::new();
+
+/// AIS vessel store (when pass_ais is enabled)
+static AIS_STORE: OnceLock<std::sync::Arc<AisVesselStore>> = OnceLock::new();
+
+/// Get the own-ship context if detected
+fn get_own_ship_context() -> Option<String> {
+    OWN_SHIP_CONTEXT
+        .get()
+        .and_then(|lock| lock.read().ok())
+        .and_then(|guard| guard.clone())
+}
+
+///// Set the own-ship context (detected from first message after vessels.self subscription)
+fn set_own_ship_context(context: &str) {
+    let lock = OWN_SHIP_CONTEXT.get_or_init(|| RwLock::new(None));
+    if let Ok(mut guard) = lock.write() {
+        if guard.is_none() {
+            log::info!("Own-ship context set to: {}", context);
+            *guard = Some(context.to_string());
+        }
+    }
+}
+
+/// Initialize the AIS vessel store (called once at startup when pass_ais is enabled)
+pub fn init_ais_store(tx: tokio::sync::broadcast::Sender<SignalKDelta>) {
+    let store = AisVesselStore::new(tx);
+    let _ = AIS_STORE.set(store);
+}
+
+/// Get a reference to the AIS vessel store
+pub fn get_ais_store() -> Option<&'static std::sync::Arc<AisVesselStore>> {
+    AIS_STORE.get()
+}
+
+/// Update AIS vessel data from Signal K message
+fn update_ais_vessel(context: &str, updates: &Value) {
+    if let Some(store) = AIS_STORE.get() {
+        store.update(context, updates);
     }
 }
 
@@ -144,7 +188,11 @@ pub(crate) fn set_sog(sog: Option<f64>) {
 const SIGNAL_K_SERVICE_NAME: &'static str = "_signalk-tcp._tcp.local.";
 const NMEA0183_SERVICE_NAME: &'static str = "_nmea-0183._tcp.local.";
 
-const SUBSCRIBE: &'static str = "{\"context\":\"vessels.self\",\"subscribe\":[{\"path\":\"navigation.headingTrue\"},{\"path\":\"navigation.position\"},{\"path\":\"navigation.speedOverGround\"},{\"path\":\"navigation.courseOverGroundTrue\"}]}\r\n";
+/// Subscription for own-ship navigation data only
+const SUBSCRIBE_SELF: &'static str = "{\"context\":\"vessels.self\",\"subscribe\":[{\"path\":\"navigation.headingTrue\"},{\"path\":\"navigation.position\"},{\"path\":\"navigation.speedOverGround\"},{\"path\":\"navigation.courseOverGroundTrue\"}]}\r\n";
+
+/// Additional subscription for all vessels (sent after own-ship context is known)
+const SUBSCRIBE_ALL: &'static str = "{\"context\":\"vessels.*\",\"subscribe\":[{\"path\":\"*\"}]}\r\n";
 
 enum ConnectionType {
     Mdns,
@@ -189,6 +237,7 @@ enum Stream {
 pub(crate) struct NavigationData {
     args: Cli,
     nmea0183_mode: bool,
+    pass_ais: bool,
     service_name: &'static str,
     what: &'static str,
     nmea_parser: Option<NmeaParser>,
@@ -197,10 +246,12 @@ pub(crate) struct NavigationData {
 impl NavigationData {
     pub(crate) fn new(args: Cli) -> Self {
         let nmea0183 = args.nmea0183;
+        let pass_ais = args.pass_ais;
         match nmea0183 {
             true => NavigationData {
                 args,
                 nmea0183_mode: true,
+                pass_ais,
                 service_name: NMEA0183_SERVICE_NAME,
                 what: "NMEA0183",
                 nmea_parser: Some(NmeaParser::new()),
@@ -208,6 +259,7 @@ impl NavigationData {
             false => NavigationData {
                 args,
                 nmea0183_mode: false,
+                pass_ais,
                 service_name: SIGNAL_K_SERVICE_NAME,
                 what: "Signal K",
                 nmea_parser: None,
@@ -478,12 +530,22 @@ impl NavigationData {
                                 if line.starts_with("{\"name\":") {
                                     log::debug!("{} sending subscription", self.what);
                                     self.send_subscription(&mut write_half).await?;
-                                    log::debug!("{} -> {}", self.what, SUBSCRIBE);
                                 }
                                 else {
-                                    match parse_signalk(&line) {
+                                    // Check if we need to send AIS subscription
+                                    // (when pass_ais is enabled and we just learned the own-ship context)
+                                    let had_own_ship = get_own_ship_context().is_some();
+
+                                    match parse_signalk(&line, self.pass_ais) {
                                         Err(e) => { log::trace!("{} parse error: {}", self.what, e)}
                                         Ok(_) => { }
+                                    }
+
+                                    // If pass_ais is enabled and we just learned the own-ship context,
+                                    // send the expanded subscription for all vessels
+                                    if self.pass_ais && !had_own_ship && get_own_ship_context().is_some() {
+                                        log::info!("Own-ship context established, expanding subscription to all vessels");
+                                        self.send_ais_subscription(&mut write_half).await?;
                                     }
                                 }
                             }
@@ -508,12 +570,29 @@ impl NavigationData {
         &self,
         stream: &mut tokio::net::tcp::WriteHalf<'_>,
     ) -> Result<(), RadarError> {
-        let bytes: &[u8] = SUBSCRIBE.as_bytes();
-        log::info!("Sending SignalK subscription: {}", SUBSCRIBE.trim());
+        // Always start with SUBSCRIBE_SELF to get own-ship navigation data
+        // and to learn the own-ship context
+        let bytes: &[u8] = SUBSCRIBE_SELF.as_bytes();
+        log::info!("Sending SignalK subscription: {}", SUBSCRIBE_SELF.trim());
         let result = stream.write_all(bytes).await.map_err(|e| RadarError::Io(e));
         match &result {
             Ok(_) => log::debug!("Subscription sent successfully"),
             Err(e) => log::warn!("Failed to send subscription: {:?}", e),
+        }
+        result
+    }
+
+    /// Send the expanded subscription for all vessels (AIS data)
+    async fn send_ais_subscription(
+        &self,
+        stream: &mut tokio::net::tcp::WriteHalf<'_>,
+    ) -> Result<(), RadarError> {
+        let bytes: &[u8] = SUBSCRIBE_ALL.as_bytes();
+        log::info!("Sending AIS subscription: {}", SUBSCRIBE_ALL.trim());
+        let result = stream.write_all(bytes).await.map_err(|e| RadarError::Io(e));
+        match &result {
+            Ok(_) => log::debug!("AIS subscription sent successfully"),
+            Err(e) => log::warn!("Failed to send AIS subscription: {:?}", e),
         }
         result
     }
@@ -560,7 +639,7 @@ impl NavigationData {
                 match if self.nmea0183_mode {
                     self.parse_nmea0183(line)
                 } else {
-                    parse_signalk(&line)
+                    parse_signalk(&line, self.pass_ais)
                 } {
                     Err(e) => {
                         log::warn!("{}", e)
@@ -613,20 +692,47 @@ impl NavigationData {
 //     "$source":"canboat-merrimac.BM","timestamp":"2024-10-01T09:11:36.000Z",
 //     "values":[{"path":"navigation.position","value":{"longitude":5.428445,"latitude":53.180205}}]}]}
 
-fn parse_signalk(s: &str) -> Result<(), RadarError> {
+fn parse_signalk(s: &str, pass_ais: bool) -> Result<(), RadarError> {
     log::trace!("parse_signalk: parsing '{}'", s);
     match serde_json::from_str::<Value>(s) {
         Ok(v) => {
             log::trace!("parse_signalk: parsed JSON successfully");
-            let updates = &v["updates"][0];
+            let context = v["context"].as_str();
+            let updates = &v["updates"];
+
+            // When pass_ais is enabled, handle own-ship detection and AIS forwarding
+            if pass_ais {
+                if let Some(ctx) = context {
+                    let own_ship = get_own_ship_context();
+
+                    if own_ship.is_none() {
+                        // First message after subscribing to vessels.self establishes own-ship
+                        // The context will be the actual vessel URN (e.g., vessels.urn:mrn:imo:mmsi:244060807)
+                        set_own_ship_context(ctx);
+                        log::info!("Own-ship context detected: {}", ctx);
+                        // Continue to process this as navigation data
+                    } else if let Some(own_ship_ctx) = own_ship {
+                        // We know which vessel is own-ship, check if this is a different vessel
+                        let is_own_ship = own_ship_ctx == ctx || ctx == "vessels.self";
+                        if !is_own_ship {
+                            // This is an AIS target - update the vessel store
+                            update_ais_vessel(ctx, updates);
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+
+            // Process own-ship navigation data
+            let update = &updates[0];
             // Extract source from upstream SignalK message
             // Try $source first (more specific), then source, fall back to "signalk"
-            let source = updates["$source"]
+            let source = update["$source"]
                 .as_str()
-                .or_else(|| updates["source"]["label"].as_str())
-                .or_else(|| updates["source"]["type"].as_str())
+                .or_else(|| update["source"]["label"].as_str())
+                .or_else(|| update["source"]["type"].as_str())
                 .unwrap_or("signalk");
-            let values = &updates["values"][0];
+            let values = &update["values"][0];
             {
                 log::trace!("parse_signalk: values = {:?}", values);
 

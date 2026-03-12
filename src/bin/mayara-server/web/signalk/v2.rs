@@ -1095,6 +1095,9 @@ async fn ws_signalk_delta(
                 log::info!("Sending {} ARPA targets to new client", target_count);
             }
         }
+
+        // AIS vessels are NOT sent on initial connection.
+        // They are sent when the client subscribes to "vessels.*"
     }
 
     if let Some(sk_delta) = sk_delta.build() {
@@ -1322,8 +1325,15 @@ async fn handle_subscription(
     subscriptions: &mut ActiveSubscriptions,
     subscription: Subscription,
 ) -> Result<(), RadarError> {
-    subscriptions.subscribe(subscription)?;
-    send_all_subscribed(socket, radars, subscriptions).await
+    let ais_subscribed = subscriptions.subscribe(subscription)?;
+    send_all_subscribed(socket, radars, subscriptions).await?;
+
+    // If AIS was just subscribed, send all known AIS vessels
+    if ais_subscribed {
+        send_all_ais_vessels(socket).await?;
+    }
+
+    Ok(())
 }
 
 async fn send_all_subscribed(
@@ -1346,6 +1356,25 @@ async fn send_all_subscribed(
         send_message(socket, delta.build().unwrap()).await?;
     }
 
+    Ok(())
+}
+
+/// Send all known AIS vessels to the client
+async fn send_all_ais_vessels(socket: &mut WebSocket) -> Result<(), RadarError> {
+    if let Some(ais_store) = navdata::get_ais_store() {
+        let vessels = ais_store.get_all_active();
+        if !vessels.is_empty() {
+            log::info!("Sending {} AIS vessels after subscription", vessels.len());
+            let mut sk_delta = SignalKDelta::new();
+            for vessel in vessels {
+                let path = format!("vessels.{}", vessel.mmsi);
+                sk_delta.add_ais_vessel_update(&path, &vessel);
+            }
+            if let Some(delta) = sk_delta.build() {
+                send_message(socket, delta).await?;
+            }
+        }
+    }
     Ok(())
 }
 

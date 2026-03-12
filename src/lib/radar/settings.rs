@@ -86,6 +86,7 @@ pub enum ControlId {
     // Client Only, not here: Orientation,
     // Client Only, not here: Position,
     // Client Only, not here: Symbology,
+    ShowAis,
     DopplerAutoTrack,
     ArpaDetectMode,
     ClearTargets,
@@ -185,7 +186,8 @@ impl ControlId {
             | ControlId::Rain
             | ControlId::Doppler
             | ControlId::DopplerMode => Category::Base,
-            ControlId::DopplerAutoTrack
+            ControlId::ShowAis
+            | ControlId::DopplerAutoTrack
             | ControlId::ArpaDetectMode
             | ControlId::ClearTargets
             | ControlId::MergeTargets
@@ -238,6 +240,7 @@ impl ControlId {
             ControlId::AccentLight => "Strength of the accent light",
             ControlId::AntennaHeight => "Height of the antenna above waterline",
             ControlId::BearingAlignment => "Alignment of the antenna relative to the vessel's bow",
+            ControlId::ShowAis => "Show AIS vessels on the radar display",
             ControlId::ClearTargets => "Clear all ARPA targets",
             ControlId::ClearTrails => "Clear target trails",
             ControlId::ColorGain => "Adjust the color curve relative to gain",
@@ -317,6 +320,7 @@ impl ControlId {
             // ControlId::AntennaStarboard => "Antenna starboard of GPS",
             ControlId::BearingAlignment => "Bearing alignment",
             // ControlId::ColorGain => "Color gain",
+            ControlId::ShowAis => "Show AIS",
             ControlId::ClearTargets => "Clear targets",
             ControlId::MergeTargets => "Merge targets",
             ControlId::ClearTrails => "Clear trails",
@@ -396,6 +400,7 @@ impl ControlId {
             ControlId::Range => ControlDestination::Command,
             ControlId::Mode => ControlDestination::Command,
             ControlId::Gain => ControlDestination::Command,
+            ControlId::ShowAis => ControlDestination::Internal,
             ControlId::GuardZone1 => ControlDestination::Target,
             ControlId::GuardZone2 => ControlDestination::Target,
             ControlId::MergeTargets => ControlDestination::Target,
@@ -562,6 +567,13 @@ impl Controls {
             new_list(ControlId::ArpaDetectMode, &["Normal", "Medium", "Fast"]).build(&mut controls);
 
             new_button(ControlId::ClearTargets).build(&mut controls);
+        }
+
+        // Add ShowAis control when pass_ais is enabled
+        if args.pass_ais {
+            new_list(ControlId::ShowAis, &["Off", "On"])
+                .set_value(1.) // Default to "On"
+                .build(&mut controls);
         }
 
         let (all_clients_tx, _) = tokio::sync::broadcast::channel(32);
@@ -1898,6 +1910,11 @@ impl ControlBuilder {
         }
         self.control.set_valid_values(valid_values);
 
+        self
+    }
+
+    pub(crate) fn set_value(mut self, value: f64) -> Self {
+        self.control.value = Some(value);
         self
     }
 

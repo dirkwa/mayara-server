@@ -131,6 +131,10 @@ class PPI {
     // ARPA targets: Map of targetId -> target data
     this.targets = new Map();
 
+    // AIS vessels: Map of mmsi -> vessel data
+    this.aisVessels = new Map();
+    this.showAis = true; // Default to showing AIS vessels
+
     // Target acquisition mode
     this.acquireTargetMode = false;
     this.onTargetAcquire = null; // Callback: (bearing, distance) => void
@@ -340,6 +344,42 @@ class PPI {
    */
   removeTarget(id) {
     this.targets.delete(id);
+    this.#drawOverlay();
+  }
+
+  /**
+   * Update or add an AIS vessel
+   * @param {string} mmsi - Vessel MMSI
+   * @param {object} data - AIS vessel data from server
+   */
+  updateAisVessel(mmsi, data) {
+    this.aisVessels.set(mmsi, data);
+    this.#drawOverlay();
+  }
+
+  /**
+   * Remove an AIS vessel (lost)
+   * @param {string} mmsi - Vessel MMSI
+   */
+  removeAisVessel(mmsi) {
+    this.aisVessels.delete(mmsi);
+    this.#drawOverlay();
+  }
+
+  /**
+   * Set whether to show AIS vessels
+   * @param {boolean} show - Whether to show AIS vessels
+   */
+  setShowAis(show) {
+    this.showAis = show;
+    this.#drawOverlay();
+  }
+
+  /**
+   * Clear all AIS vessels from the display
+   */
+  clearAisVessels() {
+    this.aisVessels.clear();
     this.#drawOverlay();
   }
 
@@ -635,6 +675,11 @@ class PPI {
 
     // Draw ARPA targets
     this.#drawTargets(ctx, range);
+
+    // Draw AIS vessels
+    if (this.showAis) {
+      this.#drawAisVessels(ctx, range);
+    }
 
     // Draw standby overlay
     if (this.powerMode !== "transmit") {
@@ -937,6 +982,157 @@ class PPI {
     }
 
     ctx.restore();
+  }
+
+  #drawAisVessels(ctx, range) {
+    if (!range || range <= 0 || this.aisVessels.size === 0) return;
+
+    const pixelsPerMeter = this.beam_length / range;
+
+    for (const [mmsi, vessel] of this.aisVessels) {
+      this.#drawAisVessel(ctx, mmsi, vessel, pixelsPerMeter);
+    }
+  }
+
+  #drawAisVessel(ctx, mmsi, vessel, pixelsPerMeter) {
+    if (!vessel.position) return;
+
+    // Calculate screen position from lat/lon
+    // We need own-ship position to calculate relative position
+    // For now, we use bearing/distance if provided, or calculate from lat/lon
+    const lat = vessel.position.latitude;
+    const lon = vessel.position.longitude;
+
+    // Get own-ship position from the radar (stored in trueHeading context)
+    // If no position available, we can't draw AIS vessels
+    // TODO: Get own-ship position from navigation data
+    // For now, assume vessels come with relative bearing/distance or we skip
+
+    // Calculate distance and bearing from own ship
+    // Since AIS vessels come from Signal K which has absolute positions,
+    // we need own-ship position. For now, let's use a simple approach:
+    // The server should send position relative to own-ship, or we calculate here.
+
+    // Assuming we have own-ship lat/lon (needs to be added to PPI state)
+    if (!this.ownShipLat || !this.ownShipLon) return;
+
+    // Haversine formula for distance and bearing
+    const R = 6371000; // Earth radius in meters
+    const lat1 = this.ownShipLat * Math.PI / 180;
+    const lat2 = lat * Math.PI / 180;
+    const dLat = (lat - this.ownShipLat) * Math.PI / 180;
+    const dLon = (lon - this.ownShipLon) * Math.PI / 180;
+
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(lat1) * Math.cos(lat2) *
+              Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const distance = R * c;
+
+    // Calculate bearing from own ship to vessel
+    const y = Math.sin(dLon) * Math.cos(lat2);
+    const x = Math.cos(lat1) * Math.sin(lat2) -
+              Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+    const bearingRad = Math.atan2(y, x); // Bearing in radians, 0 = North
+
+    const pixelDist = distance * pixelsPerMeter;
+
+    // Don't draw if outside display range
+    if (pixelDist > this.beam_length * 1.5) return;
+
+    // Apply heading rotation for display mode
+    const heading = this.trueHeading || 0;
+    const adjustedBearing = bearingRad - heading + this.headingRotation;
+
+    // Convert polar to cartesian (bearing is clockwise from north)
+    const screenX = this.center_x + pixelDist * Math.sin(adjustedBearing);
+    const screenY = this.center_y - pixelDist * Math.cos(adjustedBearing);
+
+    ctx.save();
+
+    // Determine vessel orientation: use heading if available, otherwise COG
+    let vesselOrientation = vessel.heading ?? vessel.cog;
+    if (vesselOrientation === undefined || vesselOrientation === null) {
+      vesselOrientation = 0;
+    }
+    // Adjust for heading mode
+    const displayOrientation = vesselOrientation - heading + this.headingRotation;
+
+    // Draw IMO-style vessel symbol
+    this.#drawImoVesselSymbol(ctx, screenX, screenY, displayOrientation, vessel);
+
+    // Draw COG vector (10 minutes of travel)
+    if (vessel.sog !== undefined && vessel.sog > 0 && vessel.cog !== undefined) {
+      const vectorLengthMeters = vessel.sog * 600; // 10 minutes in seconds
+      const vectorLengthPixels = vectorLengthMeters * pixelsPerMeter;
+      const maxVectorLength = 150; // Cap vector length
+      const scaledVectorLength = Math.min(vectorLengthPixels, maxVectorLength);
+
+      if (scaledVectorLength > 5) {
+        const cogDisplay = vessel.cog - heading + this.headingRotation;
+        const vx = screenX + scaledVectorLength * Math.sin(cogDisplay);
+        const vy = screenY - scaledVectorLength * Math.cos(cogDisplay);
+
+        ctx.beginPath();
+        ctx.moveTo(screenX, screenY);
+        ctx.lineTo(vx, vy);
+        ctx.strokeStyle = "#00ffff";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+    }
+
+    // Draw vessel name or MMSI
+    const label = vessel.name || mmsi;
+    ctx.fillStyle = "#00ffff";
+    ctx.font = "11px/1 Verdana, Geneva, sans-serif";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillText(label, screenX + 15, screenY - 5);
+
+    ctx.restore();
+  }
+
+  /**
+   * Draw IMO-style vessel symbol (isoceles triangle pointing in direction of travel)
+   */
+  #drawImoVesselSymbol(ctx, x, y, orientation, vessel) {
+    const length = 20; // Symbol length in pixels
+    const width = 10;  // Symbol width at base
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(orientation);
+
+    // Draw isoceles triangle pointing up (bow direction)
+    ctx.beginPath();
+    ctx.moveTo(0, -length / 2);        // Bow (top)
+    ctx.lineTo(-width / 2, length / 2); // Port stern
+    ctx.lineTo(width / 2, length / 2);  // Starboard stern
+    ctx.closePath();
+
+    // Fill and stroke
+    ctx.fillStyle = "rgba(0, 255, 255, 0.3)";
+    ctx.fill();
+    ctx.strokeStyle = "#00ffff";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Draw center dot
+    ctx.beginPath();
+    ctx.arc(0, 0, 2, 0, 2 * Math.PI);
+    ctx.fillStyle = "#00ffff";
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  /**
+   * Set own-ship position for AIS vessel relative positioning
+   */
+  setOwnShipPosition(lat, lon) {
+    this.ownShipLat = lat;
+    this.ownShipLon = lon;
   }
 
   #drawCompassRose(ctx) {

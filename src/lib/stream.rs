@@ -123,6 +123,21 @@ impl SignalKDelta {
         self.updates.push(delta_update);
     }
 
+    /// Add an AIS vessel update to the delta message.
+    pub fn add_ais_vessel_update(&mut self, path: &str, vessel: &crate::ais::AisVesselApi) {
+        let value = serde_json::to_value(vessel).unwrap_or(serde_json::Value::Null);
+        let delta_update = DeltaUpdate {
+            timestamp: Some(Utc::now()),
+            source: Some("signalk".to_string()),
+            meta: Vec::new(),
+            values: vec![DeltaValue::Ais {
+                path: path.to_string(),
+                value,
+            }],
+        };
+        self.updates.push(delta_update);
+    }
+
     pub fn add_meta_for_control(&mut self, radar_id: &str, control: &Control) {
         let mut meta = Vec::new();
         let path = format!("radars.{}.controls.{}", radar_id, control.item().control_id);
@@ -177,7 +192,7 @@ struct DeltaUpdate {
     values: Vec<DeltaValue>,
 }
 
-/// A single value update (control, target, or navigation)
+/// A single value update (control, target, navigation, or AIS)
 #[derive(Serialize, Clone, Debug, ToSchema)]
 #[serde(untagged)]
 enum DeltaValue {
@@ -203,6 +218,13 @@ enum DeltaValue {
         /// Navigation value (radians for heading, m/s for speed, etc.)
         value: f64,
     },
+    /// AIS vessel update (structured data from AIS store)
+    Ais {
+        /// Vessel path (e.g., "vessels.227334400")
+        path: String,
+        /// Structured vessel data
+        value: serde_json::Value,
+    },
 }
 
 impl DeltaValue {
@@ -211,6 +233,7 @@ impl DeltaValue {
             DeltaValue::Control { path, .. } => path,
             DeltaValue::Target { path, .. } => path,
             DeltaValue::Navigation { path, .. } => path,
+            DeltaValue::Ais { path, .. } => path,
         }
     }
 }
@@ -290,6 +313,8 @@ pub struct ActiveSubscriptions {
     target_subscriptions: HashMap<String, Vec<String>>,
     /// Navigation path subscriptions (e.g., "navigation.headingTrue")
     navigation_subscriptions: Vec<String>,
+    /// Vessel (AIS) path subscriptions (e.g., "vessels.*")
+    vessel_subscriptions: Vec<String>,
 }
 
 impl ActiveSubscriptions {
@@ -300,6 +325,7 @@ impl ActiveSubscriptions {
             timeout: Duration::from_secs(99999999),
             target_subscriptions: HashMap::new(),
             navigation_subscriptions: Vec::new(),
+            vessel_subscriptions: Vec::new(),
         }
     }
 
@@ -316,9 +342,11 @@ impl ActiveSubscriptions {
         self.timeout
     }
 
-    pub fn subscribe(&mut self, subscription: Subscription) -> Result<(), RadarError> {
+    /// Subscribe to paths. Returns true if a new AIS vessel subscription was added.
+    pub fn subscribe(&mut self, subscription: Subscription) -> Result<bool, RadarError> {
         self.mode = Subscribe::Some;
         let mut period = u64::MAX;
+        let mut ais_subscribed = false;
         for path_subscription in subscription.subscribe {
             let path = &path_subscription.path;
 
@@ -343,6 +371,16 @@ impl ActiveSubscriptions {
                     .entry(radar_id.to_string())
                     .or_default()
                     .push(target_pattern.to_string());
+                continue;
+            }
+
+            // Handle vessel (AIS) subscriptions (e.g., "vessels.*")
+            if path.starts_with("vessels.") {
+                log::debug!("Subscribing to vessel path: {}", path);
+                if !self.vessel_subscriptions.contains(path) {
+                    self.vessel_subscriptions.push(path.clone());
+                    ais_subscribed = true;
+                }
                 continue;
             }
 
@@ -394,13 +432,23 @@ impl ActiveSubscriptions {
         }
         self.set_timeout(period);
 
-        Ok(())
+        Ok(ais_subscribed)
     }
 
     pub fn desubscribe(&mut self, subscription: Desubscription) -> Result<(), RadarError> {
         self.mode = Subscribe::Some;
         for path_desubscription in subscription.desubscribe {
-            let (radar_id, control_id) = extract_path(&path_desubscription.path);
+            let path = &path_desubscription.path;
+
+            // Handle vessel (AIS) desubscriptions (e.g., "vessels.*")
+            if path.starts_with("vessels.") {
+                log::debug!("Desubscribing from vessel path: {}", path);
+                self.vessel_subscriptions.retain(|p| p != path);
+                continue;
+            }
+
+            // Handle control desubscriptions (existing logic)
+            let (radar_id, control_id) = extract_path(path);
             let paths = self.paths.get_mut(radar_id);
             if paths.is_none() {
                 continue;
@@ -512,6 +560,11 @@ impl ActiveSubscriptions {
             return self.is_subscribed_target_path(path);
         }
 
+        // Handle vessel (AIS) paths (e.g., "vessels.227334400")
+        if path.starts_with("vessels.") {
+            return self.is_subscribed_vessel_path(path);
+        }
+
         // Handle control paths (existing logic)
         let (radar_id, control_id) = extract_path(path);
         let control_id = match ControlId::from_str(control_id) {
@@ -596,6 +649,23 @@ impl ActiveSubscriptions {
                             return true;
                         }
                     }
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if subscribed to a vessel (AIS) path
+    fn is_subscribed_vessel_path(&self, path: &str) -> bool {
+        for subscribed_path in &self.vessel_subscriptions {
+            if subscribed_path == path {
+                return true;
+            }
+            // Support wildcard matching (e.g., "vessels.*" matches "vessels.227334400")
+            if subscribed_path.contains('*') {
+                let matcher = WildMatch::new(subscribed_path);
+                if matcher.matches(path) {
+                    return true;
                 }
             }
         }

@@ -21,6 +21,8 @@ import {
   getCurrentRangeDisplay,
   isAcquireTargetMode,
   acquireTargetAtPosition,
+  subscribeToAis,
+  unsubscribeFromAis,
 } from "./control.js";
 import { isStandaloneMode, detectMode } from "./api.js";
 import "./protobuf/protobuf.min.js";
@@ -49,6 +51,9 @@ var lastRadarLat = null;
 var lastRadarLon = null;
 var lastRadarHeading = null;
 var isStationary = false; // Set from server config
+
+// AIS display
+var showAis = null; // null = not yet received from server, then true/false
 
 registerRadarCallback(radarLoaded);
 registerControlCallback(controlUpdate);
@@ -310,6 +315,11 @@ function updatePositionBox(lat, lon, heading) {
   lastRadarLon = lon;
   if (heading !== null && heading !== undefined) {
     lastRadarHeading = heading;
+  }
+
+  // Update PPI with own-ship position for AIS vessel relative positioning
+  if (ppi && lat !== null && lon !== null) {
+    ppi.setOwnShipPosition(lat, lon);
   }
 
   const label = box.querySelector(".myr_pos_label");
@@ -827,6 +837,23 @@ function controlUpdate(controlId, value) {
     if (index >= 0 && index < 4 && ppi) {
       ppi.setNoTransmitSector(index, parseNoTransmitSector(value));
     }
+  } else if (controlId === "showAis") {
+    const newShowAis = value.value === 1;
+    // Subscribe or unsubscribe based on state change
+    // showAis === null means first time receiving control from server
+    if (newShowAis && (showAis === null || !showAis)) {
+      subscribeToAis();
+    } else if (!newShowAis && (showAis === null || showAis)) {
+      unsubscribeFromAis();
+      // Clear all AIS vessels from display when turning off
+      if (ppi) {
+        ppi.clearAisVessels();
+      }
+    }
+    showAis = newShowAis;
+    if (ppi) {
+      ppi.setShowAis(showAis);
+    }
   } else {
     const control = getControl(controlId);
     if (control?.name === "Range") {
@@ -866,6 +893,23 @@ function handleStreamMessage(path, value) {
 
           // Target update
           ppi.updateTarget(targetId, value);
+        }
+      }
+    }
+  }
+
+  // Handle AIS vessel updates: vessels.{mmsi}
+  if (path.startsWith("vessels.") && !path.includes("radars")) {
+    const parts = path.split(".");
+    if (parts.length >= 2) {
+      const mmsi = parts[1];
+      if (ppi) {
+        if (value === null || value.status === "Lost") {
+          // Vessel lost
+          ppi.removeAisVessel(mmsi);
+        } else {
+          // Vessel update
+          ppi.updateAisVessel(mmsi, value);
         }
       }
     }

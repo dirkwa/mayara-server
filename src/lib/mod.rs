@@ -13,6 +13,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_graceful_shutdown::{SubsystemBuilder, SubsystemHandle};
 use utoipa::ToSchema;
 
+pub mod ais;
 pub mod brand;
 pub mod config;
 pub mod locator;
@@ -103,6 +104,10 @@ pub struct Cli {
     /// Automatically put detected radars into transmit mode
     #[arg(long, default_value_t = false)]
     pub transmit: bool,
+
+    /// Pass AIS targets from Signal K server to GUI clients
+    #[arg(long, default_value_t = false)]
+    pub pass_ais: bool,
 }
 
 /// Static position data (latitude, longitude, heading)
@@ -302,6 +307,53 @@ pub async fn start_session(
 
     // Initialize navigation broadcast sender so navdata can push updates to GUI clients
     navdata::init_nav_broadcast(radars.get_sk_client_tx());
+
+    // Initialize AIS vessel store if pass_ais is enabled
+    if args.pass_ais {
+        navdata::init_ais_store(radars.get_sk_client_tx());
+
+        // Start background task to check for AIS vessel timeouts (every 30 seconds)
+        subsystem.start(SubsystemBuilder::new("AIS Timeout", |subsys| async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                tokio::select! { biased;
+                    _ = subsys.on_shutdown_requested() => {
+                        log::debug!("AIS timeout task shutdown");
+                        break;
+                    },
+                    _ = interval.tick() => {
+                        if let Some(store) = navdata::get_ais_store() {
+                            let lost_count = store.check_timeouts();
+                            if lost_count > 0 {
+                                log::debug!("Marked {} AIS vessels as Lost", lost_count);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok::<(), miette::Report>(())
+        }));
+
+        // Start background task to flush pending AIS broadcasts (every 50ms)
+        // This coalesces rapid updates into single broadcasts
+        subsystem.start(SubsystemBuilder::new("AIS Broadcast", |subsys| async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
+            loop {
+                tokio::select! { biased;
+                    _ = subsys.on_shutdown_requested() => {
+                        log::debug!("AIS broadcast task shutdown");
+                        break;
+                    },
+                    _ = interval.tick() => {
+                        if let Some(store) = navdata::get_ais_store() {
+                            store.flush_pending_broadcasts();
+                        }
+                    }
+                }
+            }
+            Ok::<(), miette::Report>(())
+        }));
+    }
 
     let locator = Locator::new(args.clone(), radars.clone());
 
