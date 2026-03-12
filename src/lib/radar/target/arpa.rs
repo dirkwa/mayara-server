@@ -543,3 +543,519 @@ impl ArpaDetector {
         self.blobs_in_progress.drain(..).collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SPOKES: u32 = 2048;
+    const SPOKES_I32: i32 = 2048;
+
+    /// Helper to create a guard zone with angles in degrees and ranges in pixels
+    fn make_guard_zone(
+        start_angle_deg: f64,
+        end_angle_deg: f64,
+        inner_range_px: i32,
+        outer_range_px: i32,
+    ) -> DetectionGuardZone {
+        let mut zone = DetectionGuardZone::new(SPOKES_I32);
+        // Set config values directly in radians (bypassing meters conversion)
+        zone.config_start_angle_rad = start_angle_deg.to_radians();
+        zone.config_end_angle_rad = end_angle_deg.to_radians();
+        zone.config_enabled = true;
+        // For testing, set pixel values directly
+        zone.start_angle = SpokeAngle::from_radians(start_angle_deg.to_radians(), SPOKES);
+        zone.end_angle = SpokeAngle::from_radians(end_angle_deg.to_radians(), SPOKES);
+        zone.inner_range = inner_range_px;
+        zone.outer_range = outer_range_px;
+        zone.enabled = true;
+        zone
+    }
+
+    /// Helper to create an ArpaDetector with a configured guard zone
+    fn make_detector_with_zone(
+        start_angle_deg: f64,
+        end_angle_deg: f64,
+        inner_range_px: i32,
+        outer_range_px: i32,
+    ) -> ArpaDetector {
+        let mut detector = ArpaDetector::new(SPOKES_I32);
+        detector.guard_zones[0] = make_guard_zone(
+            start_angle_deg,
+            end_angle_deg,
+            inner_range_px,
+            outer_range_px,
+        );
+        detector
+    }
+
+    /// Simulate spokes with a target at a specific bearing and range
+    /// Returns completed blobs after processing all spokes
+    fn simulate_target(
+        detector: &mut ArpaDetector,
+        target_bearing_start: u32,
+        target_bearing_end: u32,
+        target_range: i32,
+        heading: SpokeHeading,
+    ) -> Vec<BlobInProgress> {
+        let pos = GeoPosition {
+            lat: 52.0,
+            lon: 4.0,
+        };
+        let time = 1000u64;
+
+        let mut all_completed = Vec::new();
+
+        // Process spokes around the target area
+        // Start a few spokes before the target, go through it, and a few after
+        let start = if target_bearing_start > 5 {
+            target_bearing_start - 5
+        } else {
+            0
+        };
+        let end = (target_bearing_end + 10).min(SPOKES - 1);
+
+        for spoke in start..=end {
+            let bearing = SpokeBearing::from_raw(spoke);
+
+            // Generate strong pixels only for spokes within the target bearing range
+            let strong_pixels = if spoke >= target_bearing_start && spoke <= target_bearing_end {
+                // Simulate a target that spans a few pixels in range
+                vec![target_range - 2, target_range - 1, target_range, target_range + 1, target_range + 2]
+            } else {
+                vec![]
+            };
+
+            let completed = detector.process_blob_pixels(
+                bearing,
+                heading,
+                &strong_pixels,
+                time + spoke as u64,
+                pos.clone(),
+                SPOKES,
+            );
+            all_completed.extend(completed);
+        }
+
+        all_completed
+    }
+
+    // =========================================================================
+    // Guard Zone Range Tests
+    // =========================================================================
+
+    #[test]
+    fn test_guard_zone_contains_range_inside() {
+        let zone = make_guard_zone(0.0, 90.0, 100, 500);
+
+        // Range inside zone
+        assert!(zone.contains_range(100), "inner boundary should be inside");
+        assert!(zone.contains_range(300), "middle should be inside");
+        assert!(zone.contains_range(500), "outer boundary should be inside");
+    }
+
+    #[test]
+    fn test_guard_zone_contains_range_outside() {
+        let zone = make_guard_zone(0.0, 90.0, 100, 500);
+
+        // Range outside zone
+        assert!(!zone.contains_range(50), "before inner should be outside");
+        assert!(!zone.contains_range(99), "just before inner should be outside");
+        assert!(!zone.contains_range(501), "just after outer should be outside");
+        assert!(!zone.contains_range(1000), "far after outer should be outside");
+    }
+
+    #[test]
+    fn test_guard_zone_disabled_rejects_all() {
+        let mut zone = make_guard_zone(0.0, 90.0, 100, 500);
+        zone.enabled = false;
+
+        assert!(!zone.contains_range(300), "disabled zone should reject all ranges");
+    }
+
+    // =========================================================================
+    // Guard Zone Angle Tests (relative to bow)
+    // =========================================================================
+
+    #[test]
+    fn test_guard_zone_contains_angle_simple() {
+        // Zone from 0° to 90° (straight ahead to starboard)
+        let zone = make_guard_zone(0.0, 90.0, 100, 500);
+
+        // Test angles relative to bow
+        let angle_0 = SpokeAngle::from_radians(0.0, SPOKES);
+        let angle_45 = SpokeAngle::from_radians(45.0_f64.to_radians(), SPOKES);
+        let angle_90 = SpokeAngle::from_radians(90.0_f64.to_radians(), SPOKES);
+        let angle_180 = SpokeAngle::from_radians(180.0_f64.to_radians(), SPOKES);
+        let angle_270 = SpokeAngle::from_radians(270.0_f64.to_radians(), SPOKES);
+
+        assert!(zone.contains_angle(angle_0, SPOKES), "0° should be inside 0-90°");
+        assert!(zone.contains_angle(angle_45, SPOKES), "45° should be inside 0-90°");
+        assert!(zone.contains_angle(angle_90, SPOKES), "90° should be inside 0-90°");
+        assert!(!zone.contains_angle(angle_180, SPOKES), "180° should be outside 0-90°");
+        assert!(!zone.contains_angle(angle_270, SPOKES), "270° should be outside 0-90°");
+    }
+
+    #[test]
+    fn test_guard_zone_contains_angle_wraparound() {
+        // Zone from 270° to 90° (wraps around 0°, covers port quarter through bow to starboard)
+        let zone = make_guard_zone(270.0, 90.0, 100, 500);
+
+        let angle_0 = SpokeAngle::from_radians(0.0, SPOKES);
+        let angle_45 = SpokeAngle::from_radians(45.0_f64.to_radians(), SPOKES);
+        let angle_90 = SpokeAngle::from_radians(90.0_f64.to_radians(), SPOKES);
+        let angle_180 = SpokeAngle::from_radians(180.0_f64.to_radians(), SPOKES);
+        let angle_270 = SpokeAngle::from_radians(270.0_f64.to_radians(), SPOKES);
+        let angle_315 = SpokeAngle::from_radians(315.0_f64.to_radians(), SPOKES);
+
+        assert!(zone.contains_angle(angle_0, SPOKES), "0° should be inside 270-90° (wraparound)");
+        assert!(zone.contains_angle(angle_45, SPOKES), "45° should be inside 270-90°");
+        assert!(zone.contains_angle(angle_90, SPOKES), "90° should be inside 270-90°");
+        assert!(zone.contains_angle(angle_270, SPOKES), "270° should be inside 270-90°");
+        assert!(zone.contains_angle(angle_315, SPOKES), "315° should be inside 270-90°");
+        assert!(!zone.contains_angle(angle_180, SPOKES), "180° should be outside 270-90°");
+    }
+
+    #[test]
+    fn test_guard_zone_negative_angles() {
+        // Zone from -90° to 0° (port quarter to dead ahead)
+        // -90° = 270° in spoke coordinates
+        let zone = make_guard_zone(-90.0, 0.0, 100, 500);
+
+        let angle_neg45 = SpokeAngle::from_radians((-45.0_f64).to_radians(), SPOKES);
+        let angle_0 = SpokeAngle::from_radians(0.0, SPOKES);
+        let angle_45 = SpokeAngle::from_radians(45.0_f64.to_radians(), SPOKES);
+
+        assert!(zone.contains_angle(angle_neg45, SPOKES), "-45° should be inside -90°..0°");
+        assert!(zone.contains_angle(angle_0, SPOKES), "0° should be inside -90°..0°");
+        assert!(!zone.contains_angle(angle_45, SPOKES), "45° should be outside -90°..0°");
+    }
+
+    // =========================================================================
+    // Guard Zone Contains (bearing + heading + range)
+    // =========================================================================
+
+    #[test]
+    fn test_guard_zone_contains_with_zero_heading() {
+        // Zone from 0° to 90° relative to bow, range 100-500 pixels
+        let zone = make_guard_zone(0.0, 90.0, 100, 500);
+        let heading = SpokeHeading::zero(); // Ship heading North
+
+        // Bearing 45° geographic with heading 0° = 45° relative to bow
+        let bearing = SpokeBearing::from_radians(45.0_f64.to_radians(), SPOKES);
+        assert!(
+            zone.contains(bearing, 300, SPOKES, heading),
+            "bearing 45° with heading 0° should be inside zone 0-90° at range 300"
+        );
+
+        // Bearing 180° geographic with heading 0° = 180° relative to bow (astern)
+        let bearing = SpokeBearing::from_radians(180.0_f64.to_radians(), SPOKES);
+        assert!(
+            !zone.contains(bearing, 300, SPOKES, heading),
+            "bearing 180° with heading 0° should be outside zone 0-90°"
+        );
+    }
+
+    #[test]
+    fn test_guard_zone_contains_with_nonzero_heading() {
+        // Zone from 0° to 90° relative to bow, range 100-500 pixels
+        let zone = make_guard_zone(0.0, 90.0, 100, 500);
+
+        // Ship heading 90° (East)
+        let heading = SpokeHeading::from_radians(90.0_f64.to_radians(), SPOKES);
+
+        // Bearing 90° geographic with heading 90° = 0° relative to bow (dead ahead)
+        let bearing = SpokeBearing::from_radians(90.0_f64.to_radians(), SPOKES);
+        assert!(
+            zone.contains(bearing, 300, SPOKES, heading),
+            "bearing 90° with heading 90° should be dead ahead (inside 0-90°)"
+        );
+
+        // Bearing 180° geographic with heading 90° = 90° relative to bow (starboard)
+        let bearing = SpokeBearing::from_radians(180.0_f64.to_radians(), SPOKES);
+        assert!(
+            zone.contains(bearing, 300, SPOKES, heading),
+            "bearing 180° with heading 90° should be starboard (inside 0-90°)"
+        );
+
+        // Bearing 0° geographic with heading 90° = -90° (270°) relative to bow (port)
+        let bearing = SpokeBearing::from_radians(0.0, SPOKES);
+        assert!(
+            !zone.contains(bearing, 300, SPOKES, heading),
+            "bearing 0° with heading 90° should be port (outside 0-90°)"
+        );
+    }
+
+    #[test]
+    fn test_guard_zone_contains_range_boundary() {
+        // Use a normal angle range (not full circle which is a special case)
+        let zone = make_guard_zone(0.0, 180.0, 100, 500);
+        let heading = SpokeHeading::zero();
+        let bearing = SpokeBearing::from_radians(45.0_f64.to_radians(), SPOKES);
+
+        assert!(zone.contains(bearing, 100, SPOKES, heading), "inner boundary should be inside");
+        assert!(zone.contains(bearing, 500, SPOKES, heading), "outer boundary should be inside");
+        assert!(!zone.contains(bearing, 99, SPOKES, heading), "just before inner should be outside");
+        assert!(!zone.contains(bearing, 501, SPOKES, heading), "just after outer should be outside");
+    }
+
+    // =========================================================================
+    // Blob Detection with Guard Zones
+    // =========================================================================
+
+    #[test]
+    fn test_blob_detection_target_inside_range() {
+        // Guard zone: 0-90° relative to bow, range 100-500 pixels
+        let mut detector = make_detector_with_zone(0.0, 90.0, 100, 500);
+
+        // Target at bearing 45° (spoke ~256), range 300 pixels
+        // With zero heading, bearing 45° = 45° relative to bow (inside zone)
+        let heading = SpokeHeading::zero();
+        let target_spoke = (45.0 / 360.0 * SPOKES as f64) as u32; // ~256
+
+        let blobs = simulate_target(
+            &mut detector,
+            target_spoke,
+            target_spoke + 10,
+            300, // Inside range 100-500
+            heading,
+        );
+
+        assert!(
+            !blobs.is_empty(),
+            "Target at range 300 (inside 100-500) should be detected"
+        );
+    }
+
+    #[test]
+    fn test_blob_detection_target_outside_range_too_close() {
+        // Guard zone: 0-90° relative to bow, range 100-500 pixels
+        let mut detector = make_detector_with_zone(0.0, 90.0, 100, 500);
+
+        let heading = SpokeHeading::zero();
+        let target_spoke = (45.0 / 360.0 * SPOKES as f64) as u32;
+
+        let blobs = simulate_target(
+            &mut detector,
+            target_spoke,
+            target_spoke + 10,
+            50, // Too close, outside range 100-500
+            heading,
+        );
+
+        assert!(
+            blobs.is_empty(),
+            "Target at range 50 (outside 100-500) should NOT be detected"
+        );
+    }
+
+    #[test]
+    fn test_blob_detection_target_outside_range_too_far() {
+        // Guard zone: 0-90° relative to bow, range 100-500 pixels
+        let mut detector = make_detector_with_zone(0.0, 90.0, 100, 500);
+
+        let heading = SpokeHeading::zero();
+        let target_spoke = (45.0 / 360.0 * SPOKES as f64) as u32;
+
+        let blobs = simulate_target(
+            &mut detector,
+            target_spoke,
+            target_spoke + 10,
+            600, // Too far, outside range 100-500
+            heading,
+        );
+
+        assert!(
+            blobs.is_empty(),
+            "Target at range 600 (outside 100-500) should NOT be detected"
+        );
+    }
+
+    #[test]
+    fn test_blob_detection_target_at_inner_boundary() {
+        // Guard zone: 0-90° relative to bow, range 100-500 pixels
+        let mut detector = make_detector_with_zone(0.0, 90.0, 100, 500);
+
+        let heading = SpokeHeading::zero();
+        let target_spoke = (45.0 / 360.0 * SPOKES as f64) as u32;
+
+        let blobs = simulate_target(
+            &mut detector,
+            target_spoke,
+            target_spoke + 10,
+            100, // At inner boundary
+            heading,
+        );
+
+        assert!(
+            !blobs.is_empty(),
+            "Target at range 100 (inner boundary) should be detected"
+        );
+    }
+
+    #[test]
+    fn test_blob_detection_target_at_outer_boundary() {
+        // Guard zone: 0-90° relative to bow, range 100-500 pixels
+        let mut detector = make_detector_with_zone(0.0, 90.0, 100, 500);
+
+        let heading = SpokeHeading::zero();
+        let target_spoke = (45.0 / 360.0 * SPOKES as f64) as u32;
+
+        let blobs = simulate_target(
+            &mut detector,
+            target_spoke,
+            target_spoke + 10,
+            500, // At outer boundary
+            heading,
+        );
+
+        assert!(
+            !blobs.is_empty(),
+            "Target at range 500 (outer boundary) should be detected"
+        );
+    }
+
+    #[test]
+    fn test_blob_detection_target_outside_angle() {
+        // Guard zone: 0-90° relative to bow
+        let mut detector = make_detector_with_zone(0.0, 90.0, 100, 500);
+
+        let heading = SpokeHeading::zero();
+        // Target at bearing 180° (astern) - outside the 0-90° zone
+        let target_spoke = (180.0 / 360.0 * SPOKES as f64) as u32; // ~1024
+
+        let blobs = simulate_target(
+            &mut detector,
+            target_spoke,
+            target_spoke + 10,
+            300, // Inside range, but wrong angle
+            heading,
+        );
+
+        assert!(
+            blobs.is_empty(),
+            "Target at bearing 180° should NOT be detected in 0-90° zone"
+        );
+    }
+
+    #[test]
+    fn test_blob_detection_with_heading_offset() {
+        // Guard zone: 0-90° relative to bow (straight ahead to starboard)
+        let mut detector = make_detector_with_zone(0.0, 90.0, 100, 500);
+
+        // Ship heading 180° (South)
+        let heading = SpokeHeading::from_radians(180.0_f64.to_radians(), SPOKES);
+
+        // Geographic bearing 180° with heading 180° = 0° relative to bow (dead ahead)
+        // This should be inside the 0-90° zone
+        let target_spoke = (180.0 / 360.0 * SPOKES as f64) as u32;
+
+        let blobs = simulate_target(
+            &mut detector,
+            target_spoke,
+            target_spoke + 10,
+            300,
+            heading,
+        );
+
+        assert!(
+            !blobs.is_empty(),
+            "Target dead ahead (geo 180° with heading 180°) should be detected in 0-90° zone"
+        );
+    }
+
+    #[test]
+    fn test_blob_detection_heading_makes_target_outside() {
+        // Guard zone: 0-90° relative to bow
+        let mut detector = make_detector_with_zone(0.0, 90.0, 100, 500);
+
+        // Ship heading 180° (South)
+        let heading = SpokeHeading::from_radians(180.0_f64.to_radians(), SPOKES);
+
+        // Geographic bearing 0° (North) with heading 180° (South) = 180° relative to bow (astern)
+        // This should be OUTSIDE the 0-90° zone
+        let target_spoke = 0;
+
+        let blobs = simulate_target(
+            &mut detector,
+            target_spoke,
+            target_spoke + 10,
+            300,
+            heading,
+        );
+
+        assert!(
+            blobs.is_empty(),
+            "Target astern (geo 0° with heading 180°) should NOT be detected in 0-90° zone"
+        );
+    }
+
+    #[test]
+    fn test_guard_zone_disabled_no_detection() {
+        let mut detector = make_detector_with_zone(0.0, 360.0, 0, 1000);
+        detector.guard_zones[0].enabled = false;
+
+        let heading = SpokeHeading::zero();
+        let blobs = simulate_target(&mut detector, 100, 110, 300, heading);
+
+        assert!(
+            blobs.is_empty(),
+            "No targets should be detected when guard zone is disabled"
+        );
+    }
+
+    // =========================================================================
+    // Edge Cases
+    // =========================================================================
+
+    #[test]
+    fn test_guard_zone_full_circle() {
+        // Full circle zone: use wraparound from 180° to 179° (almost full circle)
+        // This creates a zone that wraps all the way around, covering 359°
+        // Note: 0° to 360° or -180° to 180° normalize to the same value and create empty zones
+        let zone = make_guard_zone(180.0, 179.0, 100, 500);
+        let heading = SpokeHeading::zero();
+
+        for angle_deg in [0, 45, 90, 135, 180, 225, 270, 315] {
+            let bearing = SpokeBearing::from_radians((angle_deg as f64).to_radians(), SPOKES);
+            assert!(
+                zone.contains(bearing, 300, SPOKES, heading),
+                "Full circle zone (180 to 179) should contain bearing {}°",
+                angle_deg
+            );
+        }
+    }
+
+    #[test]
+    fn test_guard_zone_very_narrow_angle() {
+        // Very narrow zone: just a few degrees
+        let zone = make_guard_zone(0.0, 5.0, 100, 500);
+        let heading = SpokeHeading::zero();
+
+        let bearing_2 = SpokeBearing::from_radians(2.0_f64.to_radians(), SPOKES);
+        let bearing_10 = SpokeBearing::from_radians(10.0_f64.to_radians(), SPOKES);
+
+        assert!(
+            zone.contains(bearing_2, 300, SPOKES, heading),
+            "2° should be inside 0-5° zone"
+        );
+        assert!(
+            !zone.contains(bearing_10, 300, SPOKES, heading),
+            "10° should be outside 0-5° zone"
+        );
+    }
+
+    #[test]
+    fn test_guard_zone_very_narrow_range() {
+        // Very narrow range zone - use a normal angle range
+        let zone = make_guard_zone(0.0, 180.0, 200, 210);
+        let heading = SpokeHeading::zero();
+        let bearing = SpokeBearing::from_radians(45.0_f64.to_radians(), SPOKES);
+
+        assert!(zone.contains(bearing, 200, SPOKES, heading), "200 should be inside 200-210");
+        assert!(zone.contains(bearing, 205, SPOKES, heading), "205 should be inside 200-210");
+        assert!(zone.contains(bearing, 210, SPOKES, heading), "210 should be inside 200-210");
+        assert!(!zone.contains(bearing, 199, SPOKES, heading), "199 should be outside 200-210");
+        assert!(!zone.contains(bearing, 211, SPOKES, heading), "211 should be outside 200-210");
+    }
+}
