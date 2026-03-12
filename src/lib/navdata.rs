@@ -175,7 +175,7 @@ impl ConnectionType {
             }
         }
         panic!(
-            "Interface must be either interface name (no :) or <connection>:<address>:<port> with <connection> one of `udp_listen`, `udp` or `tcp`."
+            "Interface must be either interface name (no :) or <connection>:<address>:<port> with <connection> one of `udp` or `tcp`."
         );
     }
 }
