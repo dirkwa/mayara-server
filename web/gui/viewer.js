@@ -149,6 +149,15 @@ window.onload = async function () {
   window.onresize = function () {
     ppi.redrawCanvas();
   };
+
+  // Keyboard shortcuts for display zoom
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'i' || event.key === 'I') {
+      ppi.zoomIn();
+    } else if (event.key === 'o' || event.key === 'O') {
+      ppi.zoomOut();
+    }
+  });
 };
 
 // Subscribe to navigation.headingTrue via SignalK WebSocket

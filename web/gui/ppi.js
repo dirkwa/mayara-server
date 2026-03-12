@@ -134,6 +134,32 @@ class PPI {
     // Target acquisition mode
     this.acquireTargetMode = false;
     this.onTargetAcquire = null; // Callback: (bearing, distance) => void
+
+    // Display zoom (1.0 = 100%, range 0.33 to 3.0)
+    this.displayZoom = 1.0;
+  }
+
+  /**
+   * Zoom in the display by 10% (max 300%)
+   */
+  zoomIn() {
+    this.displayZoom = Math.min(3.0, this.displayZoom * 1.1);
+    this.redrawCanvas();
+  }
+
+  /**
+   * Zoom out the display by 10% (min 33%)
+   */
+  zoomOut() {
+    this.displayZoom = Math.max(0.33, this.displayZoom / 1.1);
+    this.redrawCanvas();
+  }
+
+  /**
+   * Get current display zoom factor
+   */
+  getDisplayZoom() {
+    return this.displayZoom;
   }
 
   /**
@@ -545,7 +571,7 @@ class PPI {
     this.height = h;
     this.center_x = w / 2;
     this.center_y = h / 2;
-    this.beam_length = Math.trunc(Math.max(this.center_x, this.center_y) * RANGE_SCALE);
+    this.beam_length = Math.trunc(Math.max(this.center_x, this.center_y) * RANGE_SCALE * this.displayZoom);
 
     // Update heading rotation
     let trueHeadingDeg = this.lastHeading;
