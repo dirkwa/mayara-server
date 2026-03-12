@@ -47,12 +47,20 @@ class WebGPURenderer {
       alphaMode: "premultiplied",
     });
 
-    // Create sampler for polar data
+    // Create sampler for polar data (linear interpolation)
     this.sampler = this.device.createSampler({
       magFilter: "linear",
       minFilter: "linear",
       addressModeU: "clamp-to-edge",
       addressModeV: "repeat",
+    });
+
+    // Create sampler for color table (nearest - no interpolation for palette lookup)
+    this.colorSampler = this.device.createSampler({
+      magFilter: "nearest",
+      minFilter: "nearest",
+      addressModeU: "clamp-to-edge",
+      addressModeV: "clamp-to-edge",
     });
 
     // Create uniform buffer for parameters
@@ -120,6 +128,11 @@ class WebGPURenderer {
           binding: 3,
           visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
           buffer: { type: "uniform" },
+        },
+        {
+          binding: 4,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: "non-filtering" },
         },
       ],
     });
@@ -226,6 +239,7 @@ class WebGPURenderer {
         { binding: 1, resource: this.colorTexture.createView() },
         { binding: 2, resource: this.sampler },
         { binding: 3, resource: { buffer: this.uniformBuffer } },
+        { binding: 4, resource: this.colorSampler },
       ],
     });
   }
@@ -378,6 +392,7 @@ fn vertexMain(@location(0) pos: vec2<f32>, @location(1) texCoord: vec2<f32>) -> 
 @group(0) @binding(0) var polarData: texture_2d<f32>;
 @group(0) @binding(1) var colorTable: texture_2d<f32>;
 @group(0) @binding(2) var texSampler: sampler;
+@group(0) @binding(4) var colorSampler: sampler;
 
 const PI: f32 = 3.14159265359;
 const TWO_PI: f32 = 6.28318530718;
@@ -399,7 +414,7 @@ fn fragmentMain(@location(0) texCoord: vec2<f32>) -> @location(0) vec4<f32> {
 
   let normalizedTheta = theta / TWO_PI;
   let radarValue = textureSample(polarData, texSampler, vec2<f32>(r, normalizedTheta)).r;
-  let color = textureSample(colorTable, texSampler, vec2<f32>(radarValue, 0.0));
+  let color = textureSample(colorTable, colorSampler, vec2<f32>(radarValue, 0.0));
 
   let insideCircle = step(r, 1.0);
   let hasData = step(0.004, radarValue);
