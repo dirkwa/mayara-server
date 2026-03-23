@@ -1,13 +1,10 @@
-# Signal K Server
+# Mayara Server
 
-Signal K Server is the reference implementation of a [Signal K](https://signalk.org/) server. Signal K is a modern, open data format and API for marine data. The server aggregates data from various sources (NMEA 0183, NMEA 2000, I2C sensors, etc.), provides a real-time WebSocket API and REST API, and supports a plugin architecture for extensibility.
+Mayara Server is the reference implementation of a [Signal K](https://signalk.org/) radar API server. 
 
 Key components:
 
-- **Core server**: Express-based HTTP/WebSocket server (TypeScript)
-- **Plugin system**: NPM-based plugins with configuration schemas
-- **Admin UI**: React-based web interface (packages/server-admin-ui)
-- **Provider patterns**: ResourceProvider, WeatherProvider, AutopilotProvider, HistoryProvider
+- **Core server**: Express-based HTTP/WebSocket server (Rust and JS for the GUI)
 
 ## Code Quality Principles
 
@@ -30,8 +27,6 @@ Do not add error handling, fallbacks, or validation for scenarios that cannot ha
 
 ### Type Safety
 
-- **All new code must be written in TypeScript**, not JavaScript
-- Use strict type checking; avoid `any` or equivalent escape hatches
 - Validate external inputs at system boundaries
 - Prefer immutable data structures where practical
 
