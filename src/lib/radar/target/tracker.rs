@@ -111,6 +111,8 @@ pub struct ActiveTarget {
     pub update_count: u32,
     /// Current status (Tracking or Lost)
     pub status: TargetStatus,
+    /// Whether target was manually or automatically acquired
+    pub is_manual: bool,
 }
 
 impl ActiveTarget {
@@ -124,6 +126,9 @@ impl ActiveTarget {
         let mut kalman = KalmanFilter::new();
         kalman.init_with_uncertainty(candidate.position, candidate.time, position_variance);
 
+        // GuardZone(0) indicates manual/MARPA acquisition
+        let is_manual = matches!(candidate.source, CandidateSource::GuardZone(0));
+
         ActiveTarget {
             id,
             position: candidate.position,
@@ -135,6 +140,7 @@ impl ActiveTarget {
             last_update: candidate.time,
             update_count: 1,
             status: TargetStatus::Acquiring,
+            is_manual,
         }
     }
 

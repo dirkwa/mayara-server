@@ -51,8 +51,8 @@ pub struct ArpaTargetApi {
     /// Target motion (course and speed) - omitted if both values are zero
     #[serde(skip_serializing_if = "TargetMotionApi::is_zero")]
     pub motion: TargetMotionApi,
-    /// Collision danger assessment - omitted if both values are zero
-    #[serde(skip_serializing_if = "TargetDangerApi::is_zero")]
+    /// Collision danger assessment - omitted if vessels diverging
+    #[serde(skip_serializing_if = "TargetDangerApi::is_empty")]
     pub danger: TargetDangerApi,
     /// How target was acquired: "auto" or "manual"
     pub acquisition: String,
@@ -92,17 +92,18 @@ impl TargetMotionApi {
     }
 }
 
-/// Collision danger assessment in the API format
+/// Collision danger assessment in the API format.
+/// Entire field is omitted when vessels are diverging (no CPA).
 #[derive(Serialize, Clone, Debug, ToSchema)]
 pub struct TargetDangerApi {
     /// Closest Point of Approach in meters
     pub cpa: f64,
-    /// Time to CPA in seconds (negative = past)
+    /// Time to CPA in seconds
     pub tcpa: f64,
 }
 
 impl TargetDangerApi {
-    fn is_zero(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.cpa == 0.0 && self.tcpa == 0.0
     }
 }

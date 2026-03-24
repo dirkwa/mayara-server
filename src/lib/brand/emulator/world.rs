@@ -6,12 +6,12 @@ use crate::radar::GeoPosition;
 const TARGET_SPEED_KNOTS: f64 = 5.0;
 const TARGET_DISTANCE_SOUTH: f64 = 500.0; // meters
 const TARGET_SPACING: f64 = 500.0; // meters between targets
-const NUM_TARGETS: usize = 5;
+const NUM_TARGETS: usize = 50;
 
 // Crossing targets: boats coming from north, heading south at 10 knots
 const CROSSING_SPEED_KNOTS: f64 = 10.0;
 const CROSSING_SPACING: f64 = 500.0; // meters between crossing boats
-const NUM_CROSSING_TARGETS: usize = 3;
+const NUM_CROSSING_TARGETS: usize = 30;
 
 // Land area dimensions - 700m south, 600m west of radar, oriented east-west
 const LAND_DISTANCE_SOUTH: f64 = 700.0; // meters south

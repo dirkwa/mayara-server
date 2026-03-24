@@ -18,6 +18,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_graceful_shutdown::{SubsystemBuilder, SubsystemHandle};
 use utoipa::ToSchema;
 
+pub mod cpa;
 pub mod range;
 pub mod settings;
 pub mod spoke;

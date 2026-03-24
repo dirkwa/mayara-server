@@ -116,7 +116,11 @@ impl TrackerManager {
     }
 
     /// Get or create tracker for a radar
-    fn get_or_create_tracker(&mut self, radar_key: &str, spokes_per_revolution: u16) -> &mut TargetTracker {
+    fn get_or_create_tracker(
+        &mut self,
+        radar_key: &str,
+        spokes_per_revolution: u16,
+    ) -> &mut TargetTracker {
         if self.merge_mode {
             // Update spokes if needed
             if let Some(ref mut tracker) = self.shared_tracker {
@@ -130,7 +134,8 @@ impl TrackerManager {
             if !self.per_radar_trackers.contains_key(radar_key) {
                 let index = self.get_radar_index(radar_key);
                 let tracker = TargetTracker::new_per_radar(index, spokes_per_revolution);
-                self.per_radar_trackers.insert(radar_key.to_string(), tracker);
+                self.per_radar_trackers
+                    .insert(radar_key.to_string(), tracker);
             }
             self.per_radar_trackers.get_mut(radar_key).unwrap()
         }
@@ -270,7 +275,7 @@ impl TrackerManager {
             size_meters: request.size_meters,
             radar_key: request.radar_key.clone(),
             max_target_speed_ms: SpokeContext::max_speed_from_mode(2), // Fast mode for MARPA
-            source: CandidateSource::GuardZone(0), // 0 = manual/MARPA
+            source: CandidateSource::GuardZone(0),                     // 0 = manual/MARPA
         };
 
         // Get tracker (use default 2048 spokes if not yet created)
@@ -303,17 +308,28 @@ impl TrackerManager {
 
     /// Run the tracker manager, receiving blobs and MARPA requests
     pub async fn run(mut self, mut blob_rx: mpsc::Receiver<BlobMessage>) {
-        use std::time::Duration;
+        use std::time::{Duration, Instant};
 
         log::info!(
             "TrackerManager started in {} mode",
-            if self.merge_mode { "merged" } else { "per-radar" }
+            if self.merge_mode {
+                "merged"
+            } else {
+                "per-radar"
+            }
         );
 
-        // Check timeouts every second
-        let mut timeout_interval = tokio::time::interval(Duration::from_secs(1));
+        // Track last timeout check to ensure we check at least every second
+        let mut last_timeout_check = Instant::now();
+        let timeout_interval = Duration::from_secs(1);
 
         loop {
+            // Check timeouts if enough time has passed
+            if last_timeout_check.elapsed() >= timeout_interval {
+                self.check_all_timeouts();
+                last_timeout_check = Instant::now();
+            }
+
             tokio::select! {
                 Some(msg) = blob_rx.recv() => {
                     self.process_blob(msg);
@@ -321,8 +337,8 @@ impl TrackerManager {
                 Some(request) = self.marpa_rx.recv() => {
                     self.process_marpa(request);
                 }
-                _ = timeout_interval.tick() => {
-                    self.check_all_timeouts();
+                _ = tokio::time::sleep(Duration::from_millis(1000)) => {
+                    // Periodic wake-up to check timeouts when idle
                 }
                 else => break,
             }
@@ -429,7 +445,6 @@ impl TrackerManager {
 
         log::info!("Broadcast deletion for target {}", target_id);
     }
-
 }
 
 /// Convert blob center to geographic position
@@ -468,8 +483,7 @@ fn active_target_to_api(
     radar_position: Option<&GeoPosition>,
 ) -> ArpaTargetApi {
     let (bearing, distance) = if let Some(radar_pos) = radar_position {
-        let dlat =
-            (target.position.lat() - radar_pos.lat()) * super::METERS_PER_DEGREE_LATITUDE;
+        let dlat = (target.position.lat() - radar_pos.lat()) * super::METERS_PER_DEGREE_LATITUDE;
         let dlon = (target.position.lon() - radar_pos.lon())
             * super::meters_per_degree_longitude(&radar_pos.lat());
 
@@ -498,6 +512,9 @@ fn active_target_to_api(
     // Use the target's actual status
     let status_str = target.status.as_str();
 
+    // Calculate CPA/TCPA if we have own-ship motion data
+    let danger = calculate_danger(target, radar_position);
+
     ArpaTargetApi {
         id,
         status: status_str.to_string(),
@@ -511,12 +528,62 @@ fn active_target_to_api(
             course: target.cog.unwrap_or(0.0),
             speed: target.sog.unwrap_or(0.0),
         },
-        danger: TargetDangerApi {
-            cpa: 0.0,  // TODO: Calculate CPA
-            tcpa: 0.0, // TODO: Calculate TCPA
-        },
-        acquisition: "auto".to_string(),
+        danger,
+        acquisition: if target.is_manual { "manual" } else { "auto" }.to_string(),
         source_zone: None,
+    }
+}
+
+/// Calculate CPA/TCPA danger assessment for a target
+fn calculate_danger(
+    target: &super::tracker::ActiveTarget,
+    radar_position: Option<&GeoPosition>,
+) -> TargetDangerApi {
+    use crate::radar::cpa::calculate_cpa_from_motion;
+
+    // Need own-ship position and motion
+    let Some(own_pos) = radar_position else {
+        return TargetDangerApi {
+            cpa: 0.0,
+            tcpa: 0.0,
+        };
+    };
+
+    // Get own-ship SOG/COG from navdata
+    let own_sog = crate::navdata::get_sog().unwrap_or(0.0);
+    let own_cog = crate::navdata::get_cog().unwrap_or(0.0);
+
+    // Need target motion data
+    let Some(target_sog) = target.sog else {
+        return TargetDangerApi {
+            cpa: 0.0,
+            tcpa: 0.0,
+        };
+    };
+    let Some(target_cog) = target.cog else {
+        return TargetDangerApi {
+            cpa: 0.0,
+            tcpa: 0.0,
+        };
+    };
+
+    // Calculate CPA/TCPA
+    match calculate_cpa_from_motion(
+        *own_pos,
+        own_sog,
+        own_cog,
+        target.position,
+        target_sog,
+        target_cog,
+    ) {
+        Some(result) => TargetDangerApi {
+            cpa: result.cpa,
+            tcpa: result.tcpa,
+        },
+        None => TargetDangerApi {
+            cpa: 0.0,
+            tcpa: 0.0,
+        },
     }
 }
 
@@ -594,7 +661,10 @@ mod tests {
         // Bearing: 0 = North (from blob.center_spoke)
         // Should be ~500m north of 52.0, 4.0
         assert!(pos.lat() > 52.0, "Position should be north: {}", pos.lat());
-        assert!((pos.lon() - 4.0).abs() < 0.0001, "Longitude should be unchanged");
+        assert!(
+            (pos.lon() - 4.0).abs() < 0.0001,
+            "Longitude should be unchanged"
+        );
     }
 
     #[test]
@@ -626,7 +696,11 @@ mod tests {
         let pos = blob_to_position(&blob, &ctx).unwrap();
 
         // Should be east of radar (true bearing 90 degrees)
-        assert!(pos.lon() > 4.0, "Position should be east: lon={}", pos.lon());
+        assert!(
+            pos.lon() > 4.0,
+            "Position should be east: lon={}",
+            pos.lon()
+        );
         assert!(
             (pos.lat() - 52.0).abs() < 0.001,
             "Latitude should be nearly unchanged"
