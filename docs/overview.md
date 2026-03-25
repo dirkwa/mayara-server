@@ -29,3 +29,19 @@ without which it will not function longer than a few minutes. This secret handsh
 Most other radars use multicast to send radar spokes to the clients on the network. Although this works really well, without any overhead, on wired ethernet it does NOT function well with WiFi. With multicast over WiFi the packets need to be sent at the lowest possible data rate in order for the packets to arrive. This does not function well with the ~ 1 Megabyte per second that a radar produces. This results in missing spokes. Even with 5 GHz networks.
 
 In fact, this is one of the original use cases for mayara: run the mayara server on a small computer with access to the radar over wired Ethernet, and access the server via wifi from a phone, tablet or PC.
+
+## Target tracking
+
+Mayara includes software-based ARPA (Automatic Radar Plotting Aid) target tracking. When enabled with `--targets arpa`, the server automatically detects and tracks radar returns, computing their course, speed, and collision danger assessment (CPA/TCPA).
+
+### IMM Filtering
+
+Target tracking uses **Interacting Multiple Model (IMM)** filtering for state estimation. IMM combines multiple motion models (constant velocity, coordinated turn, maneuvering) to better track targets that switch between different motion patterns—for example, a vessel cruising at constant speed that then makes a turn.
+
+The IMM filter runs multiple Kalman filters in parallel, each using a different motion model, and combines their outputs using probability weights that adapt based on which model best explains the observed motion.
+
+**References:**
+
+- [Wikipedia: Multiple Model](https://en.wikipedia.org/wiki/Multiple_model) — overview of the technique
+- [filterpy IMM documentation](https://filterpy.readthedocs.io/en/latest/kalman/IMMEstimator.html) — practical implementation reference
+- Bar-Shalom, Li, and Kirubarajan, *Estimation with Applications to Tracking and Navigation* — the definitive textbook on target tracking
