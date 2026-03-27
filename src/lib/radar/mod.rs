@@ -550,7 +550,7 @@ impl SharedRadars {
         let mut radars = self.radars.write().unwrap();
 
         // For now, drop second radar in replay Mode...
-        if new_info.replay && key.ends_with("-B") {
+        if new_info.replay && key.ends_with("B") {
             return None;
         }
 

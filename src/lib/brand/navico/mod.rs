@@ -8,6 +8,7 @@ use tokio_graceful_shutdown::{SubsystemBuilder, SubsystemHandle};
 
 use crate::locator::LocatorAddress;
 use crate::network::NetworkSocketAddrV4;
+use crate::radar::range::Ranges;
 use crate::radar::settings::ControlId;
 use crate::radar::{RadarInfo, SharedRadars};
 use crate::util::PrintableSlice;
@@ -456,6 +457,10 @@ impl NavicoLocator {
                 settings::update_when_model_known(&mut info.controls, model, &info2);
                 info.set_doppler(model == Model::HALO);
             }
+            // In replay mode, use default Navico ranges if none are set
+            if info.ranges.is_empty() && self.args.replay {
+                info.set_ranges(default_navico_ranges());
+            }
             radars.update(&mut info);
 
             let report_name = info.key() + " reports";
@@ -527,3 +532,44 @@ const BLANKING_SECTORS: [(usize, ControlId); 4] = [
     (2, ControlId::NoTransmitSector3),
     (3, ControlId::NoTransmitSector4),
 ];
+
+/// Default Navico ranges for replay mode (up to 24 NM / 24 km)
+/// Works for BR24, 3G, 4G, and Halo radars
+fn default_navico_ranges() -> Ranges {
+    // Combined metric and nautical distances in meters
+    let distances = vec![
+        // Metric ranges
+        50,    // 50 m
+        75,    // 75 m
+        100,   // 100 m
+        250,   // 250 m
+        500,   // 500 m
+        750,   // 750 m
+        1000,  // 1 km
+        1500,  // 1.5 km
+        2000,  // 2 km
+        3000,  // 3 km
+        4000,  // 4 km
+        6000,  // 6 km
+        8000,  // 8 km
+        12000, // 12 km
+        16000, // 16 km
+        24000, // 24 km
+        // Nautical ranges
+        115,   // 1/16 NM
+        231,   // 1/8 NM
+        463,   // 1/4 NM
+        926,   // 1/2 NM
+        1389,  // 3/4 NM
+        1852,  // 1 NM
+        2778,  // 1.5 NM
+        3704,  // 2 NM
+        5556,  // 3 NM
+        7408,  // 4 NM
+        11112, // 6 NM
+        14816, // 8 NM
+        22224, // 12 NM
+    ];
+
+    Ranges::new_by_distance(&distances)
+}

@@ -849,7 +849,8 @@ impl NavicoReportReceiver {
     // If range detection is in progress, go to the next range
     async fn process_range(&mut self, range: i32) -> Result<(), RadarError> {
         let range = range / 10;
-        if self.common.info.ranges.len() == 0
+
+        if self.common.info.ranges.is_empty()
             && self.common.info.range_detection.is_none()
             && !self.common.replay
         {
