@@ -757,16 +757,9 @@ class PPI {
     this.#drawGuardZone(ctx, this.guardZones[0], "rgba(144, 238, 144, 0.25)", "rgba(0, 128, 0, 0.6)");
     this.#drawGuardZone(ctx, this.guardZones[1], "rgba(173, 216, 230, 0.25)", "rgba(0, 0, 255, 0.6)");
 
-    // Draw exclusion zones (greyish color scheme)
-    this.#drawGuardZone(ctx, this.exclusionZones[0], "rgba(180, 180, 180, 0.25)", "rgba(120, 120, 120, 0.6)");
-    this.#drawGuardZone(ctx, this.exclusionZones[1], "rgba(180, 180, 180, 0.25)", "rgba(120, 120, 120, 0.6)");
-    this.#drawGuardZone(ctx, this.exclusionZones[2], "rgba(180, 180, 180, 0.25)", "rgba(120, 120, 120, 0.6)");
-    this.#drawGuardZone(ctx, this.exclusionZones[3], "rgba(180, 180, 180, 0.25)", "rgba(120, 120, 120, 0.6)");
-
-    // Draw exclusion rectangles
-    for (const rect of this.exclusionRects) {
-      this.#drawExclusionRect(ctx, rect);
-    }
+    // Draw all exclusion zones and rects as a single composite shape
+    // to avoid overlapping transparency issues
+    this.#drawAllExclusions(ctx);
 
     // Draw drag handles if editing
     if (this.editingZoneIndex !== null) {
@@ -969,6 +962,136 @@ class PPI {
     ctx.strokeStyle = "rgba(120, 120, 120, 0.6)";
     ctx.lineWidth = 1;
     ctx.stroke();
+  }
+
+  /**
+   * Draw all exclusion zones and rects as a single composite shape.
+   * This prevents overlapping transparency from making overlapped areas lighter.
+   */
+  #drawAllExclusions(ctx) {
+    if (!this.range || this.range <= 0) return;
+
+    const pixelsPerMeter = this.beam_length / this.range;
+    const cos_h = Math.cos(this.headingRotation);
+    const sin_h = Math.sin(this.headingRotation);
+
+    // Collect all shapes to draw
+    const shapes = [];
+
+    // Add sector exclusion zones
+    for (const zone of this.exclusionZones) {
+      if (!zone) continue;
+
+      const innerRadius = zone.startDistance * pixelsPerMeter;
+      const outerRadius = zone.endDistance * pixelsPerMeter;
+      if (outerRadius <= 0) continue;
+
+      const startAngle = zone.startAngle + this.headingRotation - Math.PI / 2;
+      const endAngle = zone.endAngle + this.headingRotation - Math.PI / 2;
+      const isCircle = Math.abs(zone.endAngle - zone.startAngle) < 0.001;
+
+      shapes.push({ type: 'sector', innerRadius, outerRadius, startAngle, endAngle, isCircle });
+    }
+
+    // Add rectangular exclusion zones
+    for (const rect of this.exclusionRects) {
+      if (!rect || !rect.enabled) continue;
+
+      const dx = rect.x2 - rect.x1;
+      const dy = rect.y2 - rect.y1;
+      const edgeLen = Math.sqrt(dx * dx + dy * dy);
+      if (edgeLen < 0.001 || (rect.width ?? 0) < 0.001) continue;
+
+      const perpX = dy / edgeLen;
+      const perpY = -dx / edgeLen;
+
+      const corners = [
+        { x: rect.x1, y: rect.y1 },
+        { x: rect.x2, y: rect.y2 },
+        { x: rect.x2 + perpX * rect.width, y: rect.y2 + perpY * rect.width },
+        { x: rect.x1 + perpX * rect.width, y: rect.y1 + perpY * rect.width },
+      ];
+
+      const canvasCorners = corners.map(c => {
+        const rx = c.x * cos_h - c.y * sin_h;
+        const ry = c.x * sin_h + c.y * cos_h;
+        return {
+          x: this.center_x + rx * pixelsPerMeter,
+          y: this.center_y - ry * pixelsPerMeter,
+        };
+      });
+
+      shapes.push({ type: 'rect', corners: canvasCorners });
+    }
+
+    if (shapes.length === 0) return;
+
+    // Draw all shapes as a single composite path for fill
+    ctx.beginPath();
+    for (const shape of shapes) {
+      if (shape.type === 'sector') {
+        if (shape.isCircle) {
+          ctx.moveTo(this.center_x + shape.outerRadius, this.center_y);
+          ctx.arc(this.center_x, this.center_y, shape.outerRadius, 0, 2 * Math.PI);
+          if (shape.innerRadius > 0) {
+            ctx.moveTo(this.center_x + shape.innerRadius, this.center_y);
+            ctx.arc(this.center_x, this.center_y, shape.innerRadius, 0, 2 * Math.PI, true);
+          }
+        } else {
+          const outerStartX = this.center_x + shape.outerRadius * Math.cos(shape.startAngle);
+          const outerStartY = this.center_y + shape.outerRadius * Math.sin(shape.startAngle);
+          ctx.moveTo(outerStartX, outerStartY);
+          ctx.arc(this.center_x, this.center_y, shape.outerRadius, shape.startAngle, shape.endAngle);
+          if (shape.innerRadius > 0) {
+            ctx.arc(this.center_x, this.center_y, shape.innerRadius, shape.endAngle, shape.startAngle, true);
+          } else {
+            ctx.lineTo(this.center_x, this.center_y);
+          }
+          ctx.closePath();
+        }
+      } else if (shape.type === 'rect') {
+        ctx.moveTo(shape.corners[0].x, shape.corners[0].y);
+        for (let i = 1; i < shape.corners.length; i++) {
+          ctx.lineTo(shape.corners[i].x, shape.corners[i].y);
+        }
+        ctx.closePath();
+      }
+    }
+
+    // Single fill for all shapes
+    ctx.fillStyle = "rgba(180, 180, 180, 0.25)";
+    ctx.fill();
+
+    // Draw strokes for each shape individually
+    ctx.strokeStyle = "rgba(120, 120, 120, 0.6)";
+    ctx.lineWidth = 1;
+    for (const shape of shapes) {
+      ctx.beginPath();
+      if (shape.type === 'sector') {
+        if (shape.isCircle) {
+          ctx.arc(this.center_x, this.center_y, shape.outerRadius, 0, 2 * Math.PI);
+          if (shape.innerRadius > 0) {
+            ctx.moveTo(this.center_x + shape.innerRadius, this.center_y);
+            ctx.arc(this.center_x, this.center_y, shape.innerRadius, 0, 2 * Math.PI);
+          }
+        } else {
+          ctx.arc(this.center_x, this.center_y, shape.outerRadius, shape.startAngle, shape.endAngle);
+          if (shape.innerRadius > 0) {
+            ctx.arc(this.center_x, this.center_y, shape.innerRadius, shape.endAngle, shape.startAngle, true);
+          } else {
+            ctx.lineTo(this.center_x, this.center_y);
+          }
+          ctx.closePath();
+        }
+      } else if (shape.type === 'rect') {
+        ctx.moveTo(shape.corners[0].x, shape.corners[0].y);
+        for (let i = 1; i < shape.corners.length; i++) {
+          ctx.lineTo(shape.corners[i].x, shape.corners[i].y);
+        }
+        ctx.closePath();
+      }
+      ctx.stroke();
+    }
   }
 
   #drawRangeRings(ctx, range) {

@@ -835,6 +835,16 @@ function controlUpdate(controlId, value) {
     if (ppi) {
       ppi.setGuardZone(1, parseGuardZone(value));
     }
+  } else if (controlId.startsWith("exclusionZone")) {
+    const index = parseInt(controlId.slice(-1)) - 1;
+    if (index >= 0 && index < 4 && ppi) {
+      ppi.setExclusionZone(index, parseGuardZone(value));
+    }
+  } else if (controlId.startsWith("exclusionRect")) {
+    const index = parseInt(controlId.slice(-1)) - 1;
+    if (index >= 0 && index < 4 && ppi) {
+      ppi.setExclusionRect(index, parseExclusionRect(value));
+    }
   } else if (controlId.startsWith("noTransmitSector")) {
     const index = parseInt(controlId.slice(-1)) - 1;
     if (index >= 0 && index < 4 && ppi) {
@@ -936,6 +946,19 @@ function parseNoTransmitSector(cv) {
   return {
     startAngle: cv.value ?? 0,
     endAngle: cv.endValue ?? 0,
+  };
+}
+
+// Parse exclusion rect control value into drawing parameters
+function parseExclusionRect(cv) {
+  if (!cv || !cv.enabled) return null;
+  return {
+    x1: cv.x1 ?? 0,
+    y1: cv.y1 ?? 0,
+    x2: cv.x2 ?? 0,
+    y2: cv.y2 ?? 0,
+    width: cv.width ?? 0,
+    enabled: true,
   };
 }
 

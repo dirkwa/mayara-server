@@ -575,8 +575,12 @@ function updateSectorUI(id, control, cv) {
   const angleDisplay = document.getElementById(`${prefix}_display_angle`);
 
   if (angleDisplay) {
-    const [, startAngle] = toUser(control.units, cv.value);
-    const [, endAngle] = toUser(control.units, cv.endValue);
+    let [, startAngle] = toUser(control.units, cv.value);
+    let [, endAngle] = toUser(control.units, cv.endValue);
+    if (control.stepValue) {
+      startAngle = roundToStep(startAngle ?? 0, control.stepValue);
+      endAngle = roundToStep(endAngle ?? 0, control.stepValue);
+    }
     angleDisplay.textContent = `${startAngle ?? 0}° - ${endAngle ?? 0}°`;
   }
 
@@ -901,8 +905,12 @@ function updateZoneUI(id, control, cv) {
   const distDisplay = document.getElementById(`${prefix}_display_dist`);
 
   if (angleDisplay) {
-    const [, startAngle] = toUser(control.units, cv.value);
-    const [, endAngle] = toUser(control.units, cv.endValue);
+    let [, startAngle] = toUser(control.units, cv.value);
+    let [, endAngle] = toUser(control.units, cv.endValue);
+    if (control.stepValue) {
+      startAngle = roundToStep(startAngle ?? 0, control.stepValue);
+      endAngle = roundToStep(endAngle ?? 0, control.stepValue);
+    }
     angleDisplay.textContent = `${startAngle ?? 0}° - ${endAngle ?? 0}°`;
   }
   if (distDisplay) {
