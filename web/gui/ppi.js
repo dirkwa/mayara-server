@@ -911,59 +911,6 @@ class PPI {
     ctx.stroke();
   }
 
-  #drawExclusionRect(ctx, rect) {
-    if (!rect || !rect.enabled) return;
-    if (!this.range || this.range <= 0) return;
-
-    const pixelsPerMeter = this.beam_length / this.range;
-
-    // Corner-based rectangle: (x1,y1) to (x2,y2) defines one edge, width is perpendicular
-    const dx = rect.x2 - rect.x1;
-    const dy = rect.y2 - rect.y1;
-    const edgeLen = Math.sqrt(dx * dx + dy * dy);
-    if (edgeLen < 0.001 || (rect.width ?? 0) < 0.001) return;
-
-    // Perpendicular unit vector (rotated 90 degrees clockwise)
-    const perpX = dy / edgeLen;
-    const perpY = -dx / edgeLen;
-
-    // 4 corners of the rectangle in world coordinates
-    const corners = [
-      { x: rect.x1, y: rect.y1 },
-      { x: rect.x2, y: rect.y2 },
-      { x: rect.x2 + perpX * rect.width, y: rect.y2 + perpY * rect.width },
-      { x: rect.x1 + perpX * rect.width, y: rect.y1 + perpY * rect.width },
-    ];
-
-    // Transform to canvas coordinates with heading rotation
-    const cos_h = Math.cos(this.headingRotation);
-    const sin_h = Math.sin(this.headingRotation);
-
-    const canvasCorners = corners.map(c => {
-      // Rotate by heading
-      const rx = c.x * cos_h - c.y * sin_h;
-      const ry = c.x * sin_h + c.y * cos_h;
-      // Scale and translate to canvas
-      return {
-        x: this.center_x + rx * pixelsPerMeter,
-        y: this.center_y - ry * pixelsPerMeter,  // y is inverted in canvas
-      };
-    });
-
-    ctx.beginPath();
-    ctx.moveTo(canvasCorners[0].x, canvasCorners[0].y);
-    for (let i = 1; i < canvasCorners.length; i++) {
-      ctx.lineTo(canvasCorners[i].x, canvasCorners[i].y);
-    }
-    ctx.closePath();
-
-    ctx.fillStyle = "rgba(180, 180, 180, 0.25)";
-    ctx.fill();
-    ctx.strokeStyle = "rgba(120, 120, 120, 0.6)";
-    ctx.lineWidth = 1;
-    ctx.stroke();
-  }
-
   /**
    * Draw all exclusion zones and rects as a single composite shape.
    * This prevents overlapping transparency from making overlapped areas lighter.
