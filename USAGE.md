@@ -4,7 +4,7 @@
 
 ### Pre-built binaries
 
-Download the latest release for your platform from the [releases page](https://github.com/your-repo/mayara-server/releases).
+Download the latest release for your platform from the [releases page](https://github.com/MarineYachtRadar/mayara-server/releases).
 
 ### Building from source
 
