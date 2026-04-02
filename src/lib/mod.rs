@@ -22,6 +22,7 @@ pub mod navdata;
 pub mod network;
 pub mod protos;
 pub mod radar;
+pub mod recording;
 pub mod stream;
 pub mod util;
 
@@ -151,6 +152,7 @@ pub enum Brand {
     Navico,
     Raymarine,
     Emulator,
+    Playback,
 }
 
 impl Brand {
@@ -161,6 +163,7 @@ impl Brand {
             Self::Navico => "nav",
             Self::Raymarine => "ray",
             Self::Emulator => "emu",
+            Self::Playback => "play",
         }
     }
 }
@@ -173,6 +176,7 @@ impl Into<Brand> for &str {
             "navico" => Brand::Navico,
             "raymarine" => Brand::Raymarine,
             "emulator" => Brand::Emulator,
+            "playback" => Brand::Playback,
             _ => panic!("Invalid brand"),
         }
     }
@@ -189,6 +193,7 @@ impl Serialize for Brand {
             Self::Navico => serializer.serialize_str("Navico"),
             Self::Raymarine => serializer.serialize_str("Raymarine"),
             Self::Emulator => serializer.serialize_str("Emulator"),
+            Self::Playback => serializer.serialize_str("Playback"),
         }
     }
 }
@@ -201,6 +206,7 @@ impl std::fmt::Display for Brand {
             Self::Navico => write!(f, "Navico"),
             Self::Raymarine => write!(f, "Raymarine"),
             Self::Emulator => write!(f, "Emulator"),
+            Self::Playback => write!(f, "Playback"),
         }
     }
 }

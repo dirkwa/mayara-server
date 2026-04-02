@@ -783,7 +783,7 @@ function showActionButtons() {
       a(
         {
           href: "recordings.html",
-          class: "myr_radar_link myr_radar_link_secondary myr_strikethrough",
+          class: "myr_radar_link myr_radar_link_secondary",
         },
         "Recordings"
       )

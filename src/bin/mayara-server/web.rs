@@ -26,6 +26,7 @@ use tower_http::trace::TraceLayer;
 use utoipa::ToSchema;
 
 mod axum_fix;
+mod recordings;
 mod signalk;
 
 pub use signalk::v2::generate_openapi_json;
@@ -56,6 +57,7 @@ pub struct Web {
     args: Cli,
     shutdown_tx: broadcast::Sender<()>,
     tx_interface_request: broadcast::Sender<Option<mpsc::Sender<InterfaceApi>>>,
+    recording_state: recordings::RecordingState,
 }
 
 impl Web {
@@ -69,6 +71,7 @@ impl Web {
             args,
             shutdown_tx,
             tx_interface_request,
+            recording_state: recordings::RecordingState::new(),
         }
     }
 
@@ -91,6 +94,7 @@ impl Web {
 
         let router = Router::new().route("/", get(endpoints));
         let router = signalk::v2::routes(router);
+        let router = recordings::routes(router);
 
         let app = router
             .fallback_service(serve_assets)

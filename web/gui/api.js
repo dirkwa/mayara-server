@@ -287,8 +287,6 @@ export function isPlaybackRadar(radarId) {
 
 // ============================================================================
 // Recordings API
-// NOTE: The recordings API was removed in v3. These functions are kept for
-// compatibility with v2 GUI code but will not work with the v3 backend.
 // ============================================================================
 
 const RECORDINGS_API = "/v2/api/vessels/self/radars/recordings";
