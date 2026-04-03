@@ -90,7 +90,6 @@ const RADAR_TARGET_URI: &str = "/signalk/v2/api/vessels/self/radars/{radar_id}/t
         Capabilities,
         BareControlValue,
         // Target types
-        TargetsResponse,
         ArpaTargetApi,
         AcquireTargetRequest,
         AcquireTargetResponse,
@@ -766,15 +765,6 @@ async fn acquire_target(
     .into_response()
 }
 
-/// Response for GET /targets endpoint
-#[derive(Serialize, ToSchema)]
-struct TargetsResponse {
-    /// ISO 8601 timestamp when response was generated
-    timestamp: String,
-    /// List of tracked targets
-    targets: Vec<ArpaTargetApi>,
-}
-
 #[utoipa::path(
     get,
     path = "/signalk/v2/api/vessels/self/radars/{radar_id}/targets",
@@ -785,7 +775,7 @@ struct TargetsResponse {
         ("radar_id" = String, Path, description = "Radar identifier", example = "nav1034A")
     ),
     responses(
-        (status = 200, body = TargetsResponse, description = "List of tracked targets"),
+        (status = 200, body = Vec<ArpaTargetApi>, description = "List of tracked targets"),
         (status = 400, description = "Target tracking not enabled"),
         (status = 404, description = "Radar not found")
     ),
@@ -836,13 +826,7 @@ async fn get_targets(Path(radar_id): Path<String>, State(state): State<Web>) -> 
 
     // Wait for response
     match response_rx.await {
-        Ok(targets) => {
-            let response = TargetsResponse {
-                timestamp: Utc::now().to_rfc3339(),
-                targets,
-            };
-            Json(response).into_response()
-        }
+        Ok(targets) => Json(targets).into_response(),
         Err(e) => {
             log::error!("Failed to receive targets response: {}", e);
             (
