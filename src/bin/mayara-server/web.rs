@@ -91,7 +91,8 @@ impl Web {
 
         let router = Router::new()
             .route("/", get(root_redirect))
-            .route("/signalk", get(endpoints));
+            .route("/signalk", get(endpoints))
+            .route("/quit", get(quit_handler));
         let router = signalk::v2::routes(router);
 
         let app = router
@@ -100,7 +101,11 @@ impl Web {
             .with_state(self)
             .into_make_service_with_connect_info::<SocketAddr>();
 
-        log::info!("Starting HTTP web server on port {}", port);
+        log::info!(
+            "Starting HTTP web server on port {} (pid {})",
+            port,
+            std::process::id()
+        );
 
         tokio::select! { biased;
             _ = subsys.on_shutdown_requested() => {
@@ -161,6 +166,11 @@ struct Server {
 
 async fn root_redirect() -> Redirect {
     Redirect::to("/gui/")
+}
+
+async fn quit_handler(State(state): State<Web>) -> &'static str {
+    let _ = state.shutdown_tx.send(());
+    "bye\n"
 }
 
 async fn endpoints(

@@ -83,9 +83,9 @@ run-dev: dev
 	@echo "Starting dev server..."
 	./target/debug/mayara-server
 
-# Run tests
+# Run unit tests and integration tests (starts emulator, runs tests, stops server)
 test:
-	cargo test 
+	./tests/run-integration.sh
 
 # Docker demo
 demo:
