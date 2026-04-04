@@ -56,7 +56,7 @@ const RADAR_TARGET_URI: &str = "/signalk/v2/api/vessels/self/radars/{radar_id}/t
 #[openapi(
     info(
         title = "Mayara Radar API",
-        version = "2.0.0",
+        version = "REPLACED_WITH_SIGNALK_API_VERSION",
         description = "REST API for controlling marine radars. Supports Navico (Simrad, B&G, Lowrance), \
                        Furuno, and Raymarine radar systems. Provides endpoints for discovering radars, \
                        reading and setting control values, and accessing radar data via WebSocket streams."
@@ -85,8 +85,6 @@ const RADAR_TARGET_URI: &str = "/signalk/v2/api/vessels/self/radars/{radar_id}/t
         FullSignalKResponse,
         RadarsResponse,
         RadarApiV3,
-        RadarInterfaces,
-        Interfaces,
         Capabilities,
         BareControlValue,
         // Target types
@@ -119,9 +117,14 @@ pub(crate) fn routes(axum: axum::Router<Web>) -> axum::Router<Web> {
         .merge(SwaggerUi::new("/swagger-ui").config(SwaggerConfig::new([OPENAPI_URI])))
 }
 
+fn openapi_spec() -> utoipa::openapi::OpenApi {
+    let mut spec = ApiDoc::openapi();
+    spec.info.version = mayara::SIGNALK_RADAR_API_VERSION.to_string();
+    spec
+}
+
 async fn openapi_json() -> impl IntoResponse {
-    let spec = ApiDoc::openapi();
-    let json = serde_json::to_string_pretty(&spec).unwrap();
+    let json = serde_json::to_string_pretty(&openapi_spec()).unwrap();
     (
         [(axum::http::header::CONTENT_TYPE, "application/json")],
         json,
@@ -130,8 +133,7 @@ async fn openapi_json() -> impl IntoResponse {
 
 /// Generate the OpenAPI specification as a JSON string
 pub fn generate_openapi_json() -> String {
-    let spec = ApiDoc::openapi();
-    serde_json::to_string_pretty(&spec).unwrap()
+    serde_json::to_string_pretty(&openapi_spec()).unwrap()
 }
 
 /// Information about a detected radar, including WebSocket URLs for data streams
@@ -241,36 +243,6 @@ async fn get_radars(
     wrap_response(api).into_response()
 }
 
-/// Wrapper for radar interface information following Signal K structure
-#[derive(Serialize, ToSchema)]
-#[schema(example = json!({
-    "radars": {
-        "interfaces": {
-            "brands": ["Navico", "Furuno", "Raymarine"],
-            "interfaces": {
-                "en0": {
-                    "ip": "192.168.1.100",
-                    "netmask": "255.255.255.0",
-                    "listeners": {
-                        "Furuno": "No match for 172.31.255.255",
-                        "Navico": "Active",
-                        "Raymarine": "Listening"
-                    }
-                }
-            }
-        }
-    }
-}))]
-struct RadarInterfaces {
-    radars: Interfaces,
-}
-
-/// Container for interface API data
-#[derive(Serialize, ToSchema)]
-struct Interfaces {
-    interfaces: InterfaceApi,
-}
-
 #[utoipa::path(
     get,
     path = "/signalk/v2/api/vessels/self/radars/interfaces",
@@ -278,7 +250,7 @@ struct Interfaces {
     description = "Returns information about which network interfaces are available and which radar brands \
                    are listening on each interface. Useful for diagnosing network configuration issues.",
     responses(
-        (status = 200, body = RadarInterfaces, description = "Network interface status for each radar brand")
+        (status = 200, body = InterfaceApi, description = "Network interface status for each radar brand")
     ),
     tag = "Configuration"
 )]
@@ -296,11 +268,11 @@ async fn get_interfaces(
 
     let (tx, mut rx) = mpsc::channel(1);
     if let Err(_) = state.tx_interface_request.send(Some(tx)) {
-        return (StatusCode::BAD_REQUEST, format!("Shutdown in progress")).into_response();
+        return Json(InterfaceApi::default()).into_response();
     }
     match rx.recv().await {
-        Some(api) => wrap_response(Interfaces { interfaces: api }).into_response(),
-        _ => Json(Vec::<String>::new()).into_response(),
+        Some(api) => Json(api).into_response(),
+        _ => Json(InterfaceApi::default()).into_response(),
     }
 }
 
@@ -468,9 +440,9 @@ async fn get_radar(
         let controls = info.controls.get_controls();
         let v = Capabilities::new(info, controls);
 
-        wrap_response(wrap(&radar_id, wrap("capabilities", v))).into_response()
+        Json(v).into_response()
     } else {
-        Json(()).into_response()
+        RadarError::NoSuchRadar(radar_id).into_response()
     }
 }
 
@@ -1006,21 +978,18 @@ struct FullSignalKResponse {
         ("radar_id" = String, Path, description = "Radar identifier", example = "nav1034A")
     ),
     responses(
-        (status = 200, body = FullSignalKResponse, description = "All control values keyed by control name"),
+        (status = 200, body = HashMap<String, BareControlValue>, description = "All control values keyed by control name"),
         (status = 404, description = "Radar not found")
     ),
     tag = "Controls"
 )]
 #[axum::debug_handler]
-async fn get_control_values(
-    Path(radar_id): Path<String>,
-    State(state): State<Web>,
-) -> Result<Json<FullSignalKResponse>, RadarError> {
+async fn get_control_values(Path(radar_id): Path<String>, State(state): State<Web>) -> Response {
     log::debug!("GET radar {} controls", radar_id);
 
     match state.radars.get_by_key(&radar_id) {
-        Some(radar) => Ok(wrap_response(get_controls(&radar))),
-        None => Err(RadarError::NoSuchRadar(radar_id)),
+        Some(radar) => Json(get_controls(&radar)).into_response(),
+        None => RadarError::NoSuchRadar(radar_id).into_response(),
     }
 }
 
@@ -1036,17 +1005,7 @@ fn get_controls(info: &RadarInfo) -> Value {
         })
         .collect();
 
-    wrap(&info.key(), wrap("controls", Value::Object(full)))
-}
-
-pub fn wrap<T>(outer: &str, value: T) -> Value
-where
-    T: Serialize,
-{
-    let value = serde_json::to_value(value).unwrap();
-    let mut map = serde_json::Map::new();
-    map.insert(outer.to_string(), value);
-    Value::Object(map)
+    Value::Object(full)
 }
 
 fn wrap_response<T>(value: T) -> Json<FullSignalKResponse>

@@ -28,6 +28,7 @@ pub mod util;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const PACKAGE: &str = env!("CARGO_PKG_NAME");
+pub const SIGNALK_RADAR_API_VERSION: &str = env!("SIGNALK_RADAR_API_VERSION");
 
 #[derive(clap::ValueEnum, Clone, Default, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -280,6 +281,15 @@ pub struct InterfaceApi {
     /// Map of network interface name to its radar listener information
     #[schema(value_type = HashMap<String, RadarInterfaceApi>)]
     interfaces: HashMap<InterfaceId, RadarInterfaceApi>,
+}
+
+impl Default for InterfaceApi {
+    fn default() -> Self {
+        InterfaceApi {
+            brands: HashSet::new(),
+            interfaces: HashMap::new(),
+        }
+    }
 }
 
 impl RadarInterfaceApi {

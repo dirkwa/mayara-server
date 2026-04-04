@@ -140,8 +140,8 @@ async fn test_get_capabilities() {
     ))
     .await;
 
-    // Response is wrapped: { version, radars: { <id>: { capabilities: { ... } } } }
-    let caps = &json["radars"][&id]["capabilities"];
+    // Response is bare capabilities object
+    let caps = &json;
 
     for field in [
         "maxRange",
@@ -185,7 +185,7 @@ async fn test_capabilities_controls_structure() {
         id
     ))
     .await;
-    let controls = json["radars"][&id]["capabilities"]["controls"]
+    let controls = json["controls"]
         .as_object()
         .unwrap();
 
@@ -225,7 +225,7 @@ async fn test_capabilities_legend_structure() {
         id
     ))
     .await;
-    let legend = &json["radars"][&id]["capabilities"]["legend"];
+    let legend = &json["legend"];
 
     for field in ["pixels", "lowReturn", "mediumReturn", "strongReturn"] {
         assert!(legend.get(field).is_some(), "Legend missing '{}'", field);
@@ -249,7 +249,7 @@ async fn test_capabilities_units_are_si() {
         id
     ))
     .await;
-    let controls = json["radars"][&id]["capabilities"]["controls"]
+    let controls = json["controls"]
         .as_object()
         .unwrap();
 
@@ -281,8 +281,8 @@ async fn test_get_all_controls() {
     ))
     .await;
 
-    assert!(json.get("version").is_some());
-    let controls = json["radars"][&id]["controls"].as_object().unwrap();
+    // Response is bare controls object
+    let controls = json.as_object().unwrap();
     assert!(!controls.is_empty());
 
     for (cid, control) in controls {

@@ -643,8 +643,7 @@ async function showInterfacesPopup() {
 
   // Fetch fresh interface data
   try {
-    const response = await fetchInterfaces();
-    const d = response?.radars?.interfaces;
+    const d = await fetchInterfaces();
 
     body.innerHTML = "";
 
