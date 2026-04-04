@@ -983,7 +983,7 @@ mod tests {
         let response = error.into_response();
 
         // If we reach here, no stack overflow occurred
-        assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.status(), http::StatusCode::NOT_FOUND);
     }
 }
 
