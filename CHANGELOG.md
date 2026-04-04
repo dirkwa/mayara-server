@@ -10,7 +10,7 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 
 ### Added
 
-- Optional TLS support (`--tls-cert` and `--tls-key` flags)
+- Optional TLS support (`--tls-cert` and `--tls-key` flags) (#36, #37)
 
 ### Fixed
 
