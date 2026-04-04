@@ -9,7 +9,7 @@
 const SIGNALK_RADARS_API = "/signalk/v2/api/vessels/self/radars";
 const STANDALONE_INTERFACES_API =
   "/signalk/v2/api/vessels/self/radars/interfaces";
-const ENDPOINT_API = "/";
+const ENDPOINT_API = "/signalk";
 
 // Detected mode (null = not detected yet)
 let detectedMode = null;
@@ -259,8 +259,6 @@ export function isPlaybackRadar(radarId) {
 
 // ============================================================================
 // Recordings API
-// NOTE: The recordings API was removed in v3. These functions are kept for
-// compatibility with v2 GUI code but will not work with the v3 backend.
 // ============================================================================
 
 const RECORDINGS_API = "/v2/api/vessels/self/radars/recordings";
