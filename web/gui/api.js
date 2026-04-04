@@ -146,9 +146,7 @@ export async function fetchCapabilities(radarId) {
     throw new Error(`Failed to fetch capabilities: ${response.status}`);
   }
 
-  const data = await response.json();
-
-  return data.radars[radarId].capabilities;
+  return response.json();
 }
 
 /**

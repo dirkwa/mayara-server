@@ -48,6 +48,10 @@ See `docker/docker-compose.yml` for example configurations including real radar 
 
 See [BUILDING.md](BUILDING.md) for instructions on installing Rust and building on Windows, Linux, and macOS.
 
+## Writing a client 
+
+See [CLIENT.md](CLIENT.md) for more information on how to communicate with `mayara-server`.
+
 ## Status
 
 See [TODO](TODO.md)

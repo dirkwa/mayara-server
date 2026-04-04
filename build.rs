@@ -65,6 +65,21 @@ fn main() {
 
     println!("cargo:rustc-env=MAYARA_GUI_DIR={}", gui_dir.display());
 
+    // Read api-version from [package.metadata] in Cargo.toml
+    let api_version = env::var("CARGO_PKG_METADATA_API_VERSION")
+        .unwrap_or_else(|_| {
+            // Fallback: parse Cargo.toml directly
+            let toml = fs::read_to_string("Cargo.toml").expect("Cannot read Cargo.toml");
+            for line in toml.lines() {
+                if let Some(v) = line.strip_prefix("api-version") {
+                    let v = v.trim().trim_start_matches('=').trim().trim_matches('"');
+                    return v.to_string();
+                }
+            }
+            panic!("api-version not found in [package.metadata]");
+        });
+    println!("cargo:rustc-env=SIGNALK_RADAR_API_VERSION={}", api_version);
+
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-changed=src/protos/RadarMessage.proto");
 }

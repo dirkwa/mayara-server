@@ -1,0 +1,11 @@
+{
+  "name": "mayara-spoke-viewer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Simple spoke viewer for mayara-server",
+  "dependencies": {
+    "protobufjs": "^7",
+    "ws": "^8"
+  }
+}

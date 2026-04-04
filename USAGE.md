@@ -29,6 +29,9 @@ mayara-server -v
 
 # With very verbose logging (trace level)
 mayara-server -vv
+
+# When you don't have a real radar and just want to experiment
+mayara-server --emulator
 ```
 
 
