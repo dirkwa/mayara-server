@@ -100,7 +100,18 @@ pub enum RadarError {
 // Tell axum how to convert `RadarError` into a response.
 impl IntoResponse for RadarError {
     fn into_response(self) -> Response {
-        (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()).into_response()
+        let status = match &self {
+            RadarError::NoSuchRadar(_) => StatusCode::NOT_FOUND,
+            RadarError::InvalidControlId(_) => StatusCode::NOT_FOUND,
+            RadarError::CannotSetControlId(_)
+            | RadarError::CannotSetControlIdValue(_, _)
+            | RadarError::MissingValue(_)
+            | RadarError::NotNumeric(_, _)
+            | RadarError::ControlError(_)
+            | RadarError::CannotParseControlId(_) => StatusCode::BAD_REQUEST,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, self.to_string()).into_response()
     }
 }
 
@@ -618,6 +629,11 @@ impl SharedRadars {
     pub fn get_by_key(&self, key: &str) -> Option<RadarInfo> {
         let radars = self.radars.read().unwrap();
         radars.info.get(key).cloned()
+    }
+
+    pub fn get_keys(&self) -> Vec<String> {
+        let radars = self.radars.read().unwrap();
+        radars.info.keys().cloned().collect()
     }
 
     /// Save persistence for a radar by key

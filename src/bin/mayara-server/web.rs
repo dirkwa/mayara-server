@@ -99,7 +99,8 @@ impl Web {
             .route("/signalk", get(endpoints))
             .route("/quit", get(quit_handler));
         let router = signalk::v2::routes(router);
-        let router = recordings::routes(router);
+        let router = recordings::routes(router)
+            .route("/signalk/{*rest}", get(api_fallback).put(api_fallback).post(api_fallback).delete(api_fallback));
 
         let app = router
             .fallback_service(serve_assets)
@@ -168,6 +169,19 @@ struct Endpoint {
 struct Server {
     version: &'static str,
     id: &'static str,
+}
+
+async fn api_fallback(uri: Uri) -> Response {
+    let endpoints = signalk::v2::api_endpoint_list();
+    (
+        http::StatusCode::NOT_FOUND,
+        format!(
+            "No route matches '{}'. Valid API endpoints:\n  {}\n",
+            uri.path(),
+            endpoints.join("\n  ")
+        ),
+    )
+        .into_response()
 }
 
 async fn root_redirect() -> Redirect {

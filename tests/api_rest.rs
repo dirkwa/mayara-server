@@ -333,7 +333,7 @@ async fn test_get_single_control_invalid() {
     ))
     .await;
 
-    assert_eq!(response.status(), 400);
+    assert_eq!(response.status(), 404);
 }
 
 // ============================================================================
@@ -379,7 +379,7 @@ async fn test_set_invalid_control() {
     )
     .await;
 
-    assert_eq!(response.status(), 400);
+    assert_eq!(response.status(), 404);
 }
 
 // ============================================================================

@@ -121,6 +121,37 @@ fn openapi_spec() -> utoipa::openapi::OpenApi {
     spec
 }
 
+pub(crate) fn api_endpoint_list() -> Vec<String> {
+    let spec = openapi_spec();
+    let mut endpoints = vec!["GET  /signalk".to_string()];
+    for (path, item) in &spec.paths.paths {
+        let methods: &[(&str, &Option<_>)] = &[
+            ("GET ", &item.get),
+            ("PUT ", &item.put),
+            ("POST", &item.post),
+            ("DEL ", &item.delete),
+        ];
+        for (method, op) in methods {
+            if op.is_some() && path.as_str() != CONTROL_URI && path.as_str() != SPOKES_URI {
+                endpoints.push(format!("{} {}", method, path));
+            }
+        }
+    }
+    endpoints.push(format!("WS   {}", CONTROL_URI));
+    endpoints.push(format!("WS   {}", SPOKES_URI));
+    endpoints.sort_by(|a, b| a[5..].cmp(&b[5..]));
+    endpoints
+}
+
+fn no_such_radar(radar_id: &str, radars: &SharedRadars) -> Response {
+    let keys = radars.get_keys();
+    (
+        StatusCode::NOT_FOUND,
+        format!("Unknown radar '{}' -- use {:?} instead", radar_id, keys),
+    )
+        .into_response()
+}
+
 async fn openapi_json() -> impl IntoResponse {
     let json = serde_json::to_string_pretty(&openapi_spec()).unwrap();
     (
@@ -419,7 +450,7 @@ async fn get_radar(
 
         Json(v).into_response()
     } else {
-        RadarError::NoSuchRadar(radar_id).into_response()
+        no_such_radar(&radar_id, &state.radars)
     }
 }
 
@@ -457,8 +488,8 @@ struct RadarControlIdParam {
     ),
     responses(
         (status = 200, description = "Control value set successfully"),
-        (status = 400, description = "Invalid control name or value out of range"),
-        (status = 404, description = "Radar not found")
+        (status = 400, description = "Value out of range or invalid"),
+        (status = 404, description = "Radar or control not found")
     ),
     tag = "Controls"
 )]
@@ -483,10 +514,9 @@ async fn set_control_value(
                 let control = match radar.controls.get_by_id(&control_id) {
                     Some(c) => c,
                     None => {
-                        // Debug: list all possible controls
                         let all = radar.controls.get_control_keys();
                         return (
-                            StatusCode::BAD_REQUEST,
+                            StatusCode::NOT_FOUND,
                             format!("Unknown control '{}' -- use {:?} instead", control_id, all),
                         )
                             .into_response();
@@ -498,7 +528,7 @@ async fn set_control_value(
                 (radar.controls.clone(), control_value, radar.key())
             }
             None => {
-                return RadarError::NoSuchRadar(radar_id).into_response();
+                return no_such_radar(&radar_id, &state.radars);
             }
         }
     };
@@ -631,7 +661,7 @@ async fn acquire_target(
     // Verify radar exists
     let radar = match state.radars.get_by_key(&radar_id) {
         Some(r) => r,
-        None => return RadarError::NoSuchRadar(radar_id).into_response(),
+        None => return no_such_radar(&radar_id, &state.radars),
     };
 
     // Get tracker command channel
@@ -735,7 +765,7 @@ async fn get_targets(Path(radar_id): Path<String>, State(state): State<Web>) -> 
 
     // Verify radar exists
     if state.radars.get_by_key(&radar_id).is_none() {
-        return RadarError::NoSuchRadar(radar_id).into_response();
+        return no_such_radar(&radar_id, &state.radars);
     }
 
     // Get current radar position from navigation data
@@ -825,7 +855,7 @@ async fn delete_target(
 
     // Verify radar exists
     if state.radars.get_by_key(&radar_id).is_none() {
-        return RadarError::NoSuchRadar(radar_id).into_response();
+        return no_such_radar(&radar_id, &state.radars);
     }
 
     // Get tracker command channel
@@ -867,7 +897,7 @@ async fn delete_target(
     ),
     responses(
         (status = 200, body = BareControlValue, description = "Current control value and state"),
-        (status = 400, description = "Unknown control name"),
+        (status = 404, description = "Control not found"),
         (status = 404, description = "Radar not found")
     ),
     tag = "Controls"
@@ -899,7 +929,7 @@ async fn get_control_value(
                         available
                     );
                     (
-                        StatusCode::BAD_REQUEST,
+                        StatusCode::NOT_FOUND,
                         format!(
                             "Unknown control '{}' -- use {:?} instead",
                             control_id, available
@@ -909,7 +939,7 @@ async fn get_control_value(
                 }
             }
         }
-        None => RadarError::NoSuchRadar(radar_id).into_response(),
+        None => no_such_radar(&radar_id, &radars),
     }
 }
 
@@ -944,7 +974,7 @@ async fn get_control_values(Path(radar_id): Path<String>, State(state): State<We
 
     match state.radars.get_by_key(&radar_id) {
         Some(radar) => Json(get_controls(&radar)).into_response(),
-        None => RadarError::NoSuchRadar(radar_id).into_response(),
+        None => no_such_radar(&radar_id, &state.radars),
     }
 }
 
