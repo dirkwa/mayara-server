@@ -14,6 +14,7 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 
 ### Fixed
 
+- Move inline `display: none` style to CSS for WebGPU warning element
 - `NoSuchRadar` returns 404 (was 500), response includes list of valid radar IDs
 - `InvalidControlId` returns 404 (was 400/500)
 - Unmatched `/signalk/` paths return 404 with list of all valid API endpoints (generated from OpenAPI spec)
