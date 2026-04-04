@@ -9,7 +9,7 @@
 const SIGNALK_RADARS_API = "/signalk/v2/api/vessels/self/radars";
 const STANDALONE_INTERFACES_API =
   "/signalk/v2/api/vessels/self/radars/interfaces";
-const ENDPOINT_API = "/";
+const ENDPOINT_API = "/signalk";
 
 // Detected mode (null = not detected yet)
 let detectedMode = null;
