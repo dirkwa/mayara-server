@@ -18,15 +18,21 @@ const LOST_REVOLUTION_COUNT: u64 = 3;
 /// they may temporarily merge with passing targets and need more time to reappear
 const STATIONARY_LOST_REVOLUTION_COUNT: u64 = 10;
 
-/// Time in milliseconds after lost before a target is deleted
-const DELETE_TIMEOUT_MS: u64 = 30_000;
+/// Number of revolutions after being marked lost before a target is deleted
+const DELETE_REVOLUTION_COUNT: u64 = 4;
 
-/// Time in milliseconds after lost before a stationary target is deleted
-const STATIONARY_DELETE_TIMEOUT_MS: u64 = 120_000;
+/// Number of revolutions after being marked lost before a stationary target is deleted.
+/// Extended to handle buoys/anchored vessels that may temporarily disappear behind a passing ship.
+const STATIONARY_DELETE_REVOLUTION_COUNT: u64 = 10;
 
 /// Speed threshold (m/s) below which a target is considered stationary
 /// 0.5 m/s = ~1 knot - accounts for GPS drift and minor movement
 const STATIONARY_SPEED_THRESHOLD: f64 = 0.5;
+
+/// Maximum separation (meters) between two targets that are considered duplicates.
+/// A large vessel can produce multiple blobs per rotation from different hull sections,
+/// each within this distance of the others but all representing the same physical target.
+const DUPLICATE_MERGE_DISTANCE_M: f64 = 100.0;
 
 /// Minimum number of updates before a target can be considered stationary
 /// Prevents false positives from slow-starting tracks
@@ -126,6 +132,8 @@ pub struct ActiveTarget {
     pub last_update: u64,
     /// Revolution count when target was last updated
     last_update_revolution: u64,
+    /// Revolution count when target was marked as lost (u64::MAX if not lost)
+    lost_revolution: u64,
     /// Number of updates received
     pub update_count: u32,
     /// Current status (Tracking or Lost)
@@ -171,6 +179,7 @@ impl ActiveTarget {
             first_seen: candidate.time,
             last_update: candidate.time,
             last_update_revolution: 0, // Will be set by tracker on first update
+            lost_revolution: u64::MAX,
             update_count: 1,
             status: TargetStatus::Acquiring,
             is_manual,
@@ -241,8 +250,10 @@ impl ActiveTarget {
         self.last_radar_key = candidate.radar_key.clone();
         self.last_radar_position = candidate.radar_position;
 
-        // Set to Tracking once we have COG, otherwise stay Acquiring
-        if self.cog.is_some() {
+        // Promote to Tracking only after enough observations for a reliable motion estimate.
+        // 4 updates means 3 successive intervals, giving the Kalman filter enough time to
+        // converge on a stable COG/SOG before the target is considered confirmed.
+        if self.update_count >= 4 && self.cog.is_some() {
             self.status = TargetStatus::Tracking;
         } else if self.status == TargetStatus::Lost {
             self.status = TargetStatus::Acquiring;
@@ -382,6 +393,9 @@ impl TargetTracker {
             .filter(|t| t.status == TargetStatus::Tracking)
             .count();
 
+        // Merge duplicate targets before logging final counts
+        self.deduplicate_targets();
+
         // Log statistics
         log::info!(
             "Revolution {}: {} targets ({} acquiring, {} tracking), {} candidates processed",
@@ -396,12 +410,75 @@ impl TargetTracker {
         self.stats = TrackerStats::default();
     }
 
+    /// Merge duplicate targets that are within DUPLICATE_MERGE_DISTANCE_M of each other.
+    /// Only young targets (< 4 updates) are candidates for removal. An established target
+    /// (>= 4 updates) is never discarded, but a young target is merged into any nearby
+    /// target — young or established. Two established targets are never merged.
+    /// A large vessel can produce multiple blobs per rotation from different hull sections,
+    /// each starting a separate acquiring track near an already-established one.
+    /// For young+young pairs the one with fewer updates is discarded; ties go to the
+    /// higher (newer) ID. For young+established pairs the young one is always discarded.
+    fn deduplicate_targets(&mut self) {
+        let ids: Vec<u64> = self.active_targets.keys().copied().collect();
+        let mut to_remove: Vec<u64> = Vec::new();
+
+        for i in 0..ids.len() {
+            let a = ids[i];
+            if to_remove.contains(&a) {
+                continue;
+            }
+            // Only consider young targets as the candidate to be removed
+            if self.active_targets[&a].update_count >= 4 {
+                continue;
+            }
+            for j in 0..ids.len() {
+                if i == j {
+                    continue;
+                }
+                let b = ids[j];
+                if to_remove.contains(&b) {
+                    continue;
+                }
+                let pos_a = self.active_targets[&a].position;
+                let pos_b = self.active_targets[&b].position;
+                let dist = calculate_distance(&pos_a, &pos_b);
+                if dist > DUPLICATE_MERGE_DISTANCE_M {
+                    continue;
+                }
+                // a is young; keep whichever has more updates (b wins ties since a is young)
+                let updates_a = self.active_targets[&a].update_count;
+                let updates_b = self.active_targets[&b].update_count;
+                let (keep, discard) = if updates_b >= updates_a { (b, a) } else { (a, b) };
+                // discard must be young — skip if the merge would remove an established target
+                if self.active_targets[&discard].update_count >= 4 {
+                    continue;
+                }
+                log::info!(
+                    "Merging duplicate target {} ({} updates) into {} ({} updates), distance={:.0}m",
+                    discard,
+                    self.active_targets[&discard].update_count,
+                    keep,
+                    self.active_targets[&keep].update_count,
+                    dist,
+                );
+                to_remove.push(discard);
+                break; // a is being discarded; no need to check more partners for it
+            }
+        }
+
+        for id in to_remove {
+            self.active_targets.remove(&id);
+        }
+    }
+
     /// Check for timed out targets.
     /// Returns (deleted_ids, newly_lost_ids) - both as target IDs.
     /// Marks targets as Lost if not seen for N revolutions:
     /// - Normal targets: 3 revolutions
     /// - Stationary targets: 10 revolutions (extended to handle temporary merging)
-    /// Removes targets after delete timeout (30s normal, 120s stationary) - time-based.
+    /// Deletes targets N revolutions after being marked lost:
+    /// - Normal targets: 4 revolutions after lost
+    /// - Stationary targets: 10 revolutions after lost
     pub fn check_timeouts(&mut self, current_time: u64) -> (Vec<u64>, Vec<u64>) {
         let mut deleted_ids = Vec::new();
         let mut lost_ids = Vec::new();
@@ -409,28 +486,29 @@ impl TargetTracker {
 
         // Check each active target
         for (id, target) in &mut self.active_targets {
-            let elapsed = current_time.saturating_sub(target.last_update);
             let revolutions_since_update =
                 current_revolution.saturating_sub(target.last_update_revolution);
             let is_stationary = target.is_stationary();
 
-            // Deletion remains time-based
-            let delete_timeout = if is_stationary {
-                STATIONARY_DELETE_TIMEOUT_MS
+            if target.status == TargetStatus::Lost {
+                // Delete after N revolutions since being marked lost
+                let delete_revolutions = if is_stationary {
+                    STATIONARY_DELETE_REVOLUTION_COUNT
+                } else {
+                    DELETE_REVOLUTION_COUNT
+                };
+                let revolutions_since_lost =
+                    current_revolution.saturating_sub(target.lost_revolution);
+                if revolutions_since_lost >= delete_revolutions {
+                    deleted_ids.push(*id);
+                    log::info!(
+                        "Target {} deleted after {} revolutions lost{}",
+                        id,
+                        revolutions_since_lost,
+                        if is_stationary { " (stationary)" } else { "" }
+                    );
+                }
             } else {
-                DELETE_TIMEOUT_MS
-            };
-
-            if elapsed >= delete_timeout {
-                // Mark for deletion (time-based)
-                deleted_ids.push(*id);
-                log::info!(
-                    "Target {} deleted after {}s without update{}",
-                    id,
-                    elapsed / 1000,
-                    if is_stationary { " (stationary)" } else { "" }
-                );
-            } else if target.status != TargetStatus::Lost {
                 // Lost detection is revolution-based
                 let lost_revolutions = if is_stationary {
                     STATIONARY_LOST_REVOLUTION_COUNT
@@ -439,8 +517,8 @@ impl TargetTracker {
                 };
 
                 if revolutions_since_update >= lost_revolutions {
-                    // Mark as lost (only add to lost_ids if status is changing)
                     target.status = TargetStatus::Lost;
+                    target.lost_revolution = current_revolution;
                     lost_ids.push(*id);
                     log::info!(
                         "Target {} marked as lost after {} revolutions without update{}",
@@ -451,6 +529,9 @@ impl TargetTracker {
                 }
             }
         }
+
+        // Suppress unused warning - current_time still needed for API compatibility
+        let _ = current_time;
 
         // Remove deleted targets
         for id in &deleted_ids {
