@@ -166,7 +166,7 @@ export function isStandaloneMode() {
 export async function acquireTarget(radarId, bearing, distance) {
   await detectMode();
 
-  const url = `${getRadarsPath()}/${radarId}/targets/acquire`;
+  const url = `${getRadarsPath()}/${radarId}/targets`;
   const body = { bearing, distance };
 
   console.log(`Acquiring target: POST ${url}`, body);
