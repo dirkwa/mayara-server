@@ -45,6 +45,7 @@ var renderMethod = "webgpu";  // "webgpu" or "webgl"
 // Heading mode: "headingUp" or "northUp"
 var headingMode = "headingUp";
 var trueHeading = 0; // in radians
+var lastLoggedHeading = null; // last heading value logged to console
 var lastHeadingTime = 0; // Timestamp of last heading update
 var headingTimeoutId = null; // Timer for heading timeout
 const HEADING_TIMEOUT_MS = 5000; // Revert to HU after 5 seconds without heading
@@ -203,6 +204,10 @@ function subscribeToHeading() {
             for (const value of update.values) {
               if (value.path === "navigation.headingTrue") {
                 trueHeading = value.value; // Already in radians
+                if (lastLoggedHeading === null || Math.abs(trueHeading - lastLoggedHeading) > 5 * Math.PI / 180) {
+                  console.log(`Heading: ${(trueHeading * 180 / Math.PI).toFixed(1)}\u00B0`);
+                  lastLoggedHeading = trueHeading;
+                }
                 onHeadingReceived();
                 updateHeadingDisplay();
               }
@@ -402,6 +407,8 @@ function onHeadingReceived() {
 // Called when heading data times out (not received for 5 seconds)
 function onHeadingTimeout() {
   headingTimeoutId = null;
+  console.log("Heading data lost");
+  lastLoggedHeading = null;
 
   // Revert to heading-up mode
   if (headingMode !== "headingUp") {
