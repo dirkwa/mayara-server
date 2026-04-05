@@ -693,6 +693,7 @@ mod tests {
             center_pixel,
             size_meters,
             in_guard_zones: vec![1], // Default to guard zone 1 for tests
+            has_doppler_approaching: false,
         }
     }
 
@@ -873,18 +874,20 @@ mod tests {
 
         let mut tracker = super::super::tracker::TargetTracker::new_merged(2048);
 
-        // Process twice to promote
+        // Process 4 times to promote (requires 4 updates)
         tracker.process_candidate(candidate.clone());
-        let candidate2 = TargetCandidate {
-            time: 4000,
-            position: GeoPosition::new(52.0011, 4.001),
-            size_meters: 30.0,
-            radar_key: "test".to_string(),
-            radar_position: Some(radar_pos),
-            max_target_speed_ms: max_speed,
-            source: CandidateSource::GuardZone(1),
-        };
-        tracker.process_candidate(candidate2);
+        for i in 1..4u64 {
+            let c = TargetCandidate {
+                time: 1000 + i * 3000,
+                position: GeoPosition::new(52.001 + i as f64 * 0.0001, 4.001),
+                size_meters: 30.0,
+                radar_key: "test".to_string(),
+                radar_position: Some(radar_pos),
+                max_target_speed_ms: max_speed,
+                source: CandidateSource::GuardZone(1),
+            };
+            tracker.process_candidate(c);
+        }
 
         // Get the target
         let target = tracker.get_active_targets().next().unwrap();

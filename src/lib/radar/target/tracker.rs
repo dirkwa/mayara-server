@@ -860,14 +860,17 @@ mod tests {
     fn test_promote_to_tracking() {
         let mut tracker = TargetTracker::new_merged(2048);
 
-        // First candidate - creates acquiring target
-        let candidate1 = make_candidate(52.0, 4.0, 1000);
-        tracker.process_candidate(candidate1);
+        // First 3 candidates build up the track but remain Acquiring
+        for i in 0..3 {
+            let lat = 52.0 + (i as f64 * 0.0001);
+            tracker.process_candidate(make_candidate(lat, 4.0, 1000 + i * 3000));
+        }
         assert_eq!(tracker.active_count(), 1);
+        let target = tracker.get_active_targets().next().unwrap();
+        assert_eq!(target.status, TargetStatus::Acquiring);
 
-        // Second candidate nearby - should promote to tracking and establish COG
-        let candidate2 = make_candidate(52.0001, 4.0, 4000); // 3s later, ~11m north
-        let result = tracker.process_candidate(candidate2);
+        // Fourth candidate promotes to tracking (4 updates with COG established)
+        let result = tracker.process_candidate(make_candidate(52.0003, 4.0, 10000));
 
         assert!(matches!(result, ProcessResult::Promoted(_)));
         let target = tracker.get_active_targets().next().unwrap();
@@ -986,37 +989,35 @@ mod tests {
     fn test_target_lost_timeout() {
         let mut tracker = TargetTracker::new_merged(2048);
 
-        // Create an active target at time 0
-        let candidate1 = make_candidate(52.0, 4.0, 0);
-        tracker.process_candidate(candidate1);
-        // Second candidate at 3s - last_update becomes 3000
-        let candidate2 = make_candidate(52.0001, 4.0, 3000);
-        tracker.process_candidate(candidate2);
-
-        assert_eq!(tracker.active_count(), 1);
-
-        // Simulate 2 revolutions - should still be Tracking (need 3 to become lost)
-        for i in 0..2 {
-            tracker.check_revolution(2000, 4000 + i * 3000);
-            tracker.check_revolution(100, 5000 + i * 3000);
+        // 4 updates to reach Tracking (last update at 9000ms)
+        for i in 0..4u64 {
+            let lat = 52.0 + (i as f64 * 0.0001);
+            tracker.process_candidate(make_candidate(lat, 4.0, i * 3000));
         }
-        let (deleted, lost) = tracker.check_timeouts(10_000);
-        assert!(deleted.is_empty());
-        assert!(lost.is_empty());
+        assert_eq!(tracker.active_count(), 1);
         let target = tracker.get_active_targets().next().unwrap();
         assert_eq!(target.status, TargetStatus::Tracking);
 
+        // Simulate 2 revolutions without update - should still be Tracking
+        for i in 0..2 {
+            tracker.check_revolution(2000, 10_000 + i * 3000);
+            tracker.check_revolution(100, 11_000 + i * 3000);
+        }
+        let (deleted, lost) = tracker.check_timeouts(16_000);
+        assert!(deleted.is_empty());
+        assert!(lost.is_empty());
+
         // One more revolution (total 3) - should become Lost
-        tracker.check_revolution(2000, 10_000);
-        tracker.check_revolution(100, 11_000);
-        let (deleted, lost) = tracker.check_timeouts(12_000);
+        tracker.check_revolution(2000, 16_000);
+        tracker.check_revolution(100, 17_000);
+        let (deleted, lost) = tracker.check_timeouts(18_000);
         assert!(deleted.is_empty());
         assert_eq!(lost.len(), 1);
         let target = tracker.get_active_targets().next().unwrap();
         assert_eq!(target.status, TargetStatus::Lost);
 
         // Check again - should not re-report as lost
-        let (deleted, lost) = tracker.check_timeouts(15_000);
+        let (deleted, lost) = tracker.check_timeouts(21_000);
         assert!(deleted.is_empty());
         assert!(lost.is_empty());
     }
@@ -1025,17 +1026,28 @@ mod tests {
     fn test_target_deleted_timeout() {
         let mut tracker = TargetTracker::new_merged(2048);
 
-        // Create an active target at time 0
-        let candidate1 = make_candidate(52.0, 4.0, 0);
-        tracker.process_candidate(candidate1);
-        // Second candidate at 3s - last_update becomes 3000
-        let candidate2 = make_candidate(52.0001, 4.0, 3000);
-        tracker.process_candidate(candidate2);
-
+        // 4 updates to reach Tracking (last update at 9000ms)
+        for i in 0..4u64 {
+            let lat = 52.0 + (i as f64 * 0.0001);
+            tracker.process_candidate(make_candidate(lat, 4.0, i * 3000));
+        }
         assert_eq!(tracker.active_count(), 1);
 
-        // Check at 34 seconds (31s after last_update=3000) - should be deleted
-        let (deleted, _lost) = tracker.check_timeouts(34_000);
+        // 3 revolutions → lost
+        for i in 0..3 {
+            tracker.check_revolution(2000, 10_000 + i * 3000);
+            tracker.check_revolution(100, 11_000 + i * 3000);
+        }
+        let (deleted, lost) = tracker.check_timeouts(19_000);
+        assert!(deleted.is_empty());
+        assert_eq!(lost.len(), 1);
+
+        // 4 more revolutions after lost → deleted (DELETE_REVOLUTION_COUNT = 4)
+        for i in 0..4 {
+            tracker.check_revolution(2000, 19_000 + i * 3000);
+            tracker.check_revolution(100, 20_000 + i * 3000);
+        }
+        let (deleted, _) = tracker.check_timeouts(31_000);
         assert_eq!(deleted.len(), 1);
         assert_eq!(tracker.active_count(), 0);
     }
@@ -1044,30 +1056,32 @@ mod tests {
     fn test_target_recovers_from_lost() {
         let mut tracker = TargetTracker::new_merged(2048);
 
-        // Create an active target using MARPA (larger uncertainty)
+        // MARPA target (counts as update 1) + 3 more updates to reach Tracking
         let candidate = make_candidate(52.0, 4.0, 0);
         tracker.add_active_target(&candidate);
-
-        // Update at 3s to establish velocity
-        let candidate2 = make_candidate(52.0001, 4.0, 3000);
-        tracker.process_candidate(candidate2);
-
-        // Get the target's predicted position at 15000ms for reference
-        let target = tracker.get_active_targets().next().unwrap();
-        let predicted = target.predict_position(15_000);
-
-        // Simulate 3 revolutions to mark as lost
-        for i in 0..3 {
-            tracker.check_revolution(2000, 4000 + i * 3000);
-            tracker.check_revolution(100, 5000 + i * 3000);
+        for i in 1..4u64 {
+            let lat = 52.0 + (i as f64 * 0.0001);
+            tracker.process_candidate(make_candidate(lat, 4.0, i * 3000));
         }
-        let (_, lost) = tracker.check_timeouts(14_000);
+        let target = tracker.get_active_targets().next().unwrap();
+        assert_eq!(target.status, TargetStatus::Tracking);
+
+        // Get predicted position for recovery
+        let predicted = target.predict_position(21_000);
+
+        // 3 revolutions without update → lost
+        for i in 0..3 {
+            tracker.check_revolution(2000, 10_000 + i * 3000);
+            tracker.check_revolution(100, 11_000 + i * 3000);
+        }
+        let (_, lost) = tracker.check_timeouts(19_000);
         assert_eq!(lost.len(), 1);
         let target = tracker.get_active_targets().next().unwrap();
         assert_eq!(target.status, TargetStatus::Lost);
 
-        // Target is seen again at the predicted position - should recover
-        let candidate3 = make_candidate(predicted.lat(), predicted.lon(), 15_000);
+        // Target is seen again at predicted position - should recover to Tracking
+        // (update_count is now 5 which is >= 4, and COG is set)
+        let candidate3 = make_candidate(predicted.lat(), predicted.lon(), 21_000);
         tracker.process_candidate(candidate3);
 
         let target = tracker.get_active_targets().next().unwrap();
@@ -1119,8 +1133,12 @@ mod tests {
         let target = tracker.get_active_targets().next().unwrap();
         assert_eq!(target.status, TargetStatus::Lost);
 
-        // At 136000ms (121s after last update) - should be deleted (time-based)
-        let (deleted, _lost) = tracker.check_timeouts(136_000);
+        // 10 more revolutions after lost → deleted (STATIONARY_DELETE_REVOLUTION_COUNT = 10)
+        for i in 0..10 {
+            tracker.check_revolution(2000, 48_000 + i * 3000);
+            tracker.check_revolution(100, 49_000 + i * 3000);
+        }
+        let (deleted, _lost) = tracker.check_timeouts(78_000);
         assert_eq!(deleted.len(), 1);
         assert_eq!(tracker.active_count(), 0);
     }
@@ -1169,29 +1187,26 @@ mod tests {
 
         // Start tracking: first detection at angle=0 (south of center)
         let (lat0, lon0) = position_at_angle(0.0);
-        let candidate0 = make_candidate(lat0, lon0, 0);
-        tracker.process_candidate(candidate0);
+        let result0 = tracker.process_candidate(make_candidate(lat0, lon0, 0));
+        let target_id = match result0 {
+            ProcessResult::NewAcquiring(id) => id,
+            _ => panic!("Expected NewAcquiring"),
+        };
 
-        // Second detection after one revolution - angle increases by angular_velocity * 3s
-        let angle1 = angular_velocity * 3.0;
-        let (lat1, lon1) = position_at_angle(angle1);
-        let candidate1 = make_candidate(lat1, lon1, revolution_ms);
-        let result1 = tracker.process_candidate(candidate1);
-        assert!(
-            matches!(result1, ProcessResult::Promoted(_)),
-            "Should promote to tracking: {:?}",
-            result1
-        );
+        // Feed 3 more candidates to reach promotion (4 updates total)
+        for i in 1..4u64 {
+            let angle = angular_velocity * (i as f64 * 3.0);
+            let (lat, lon) = position_at_angle(angle);
+            tracker.process_candidate(make_candidate(lat, lon, i * revolution_ms));
+        }
+        let target = tracker.get_target(target_id).unwrap();
+        assert_eq!(target.status, TargetStatus::Tracking);
 
         // Continue tracking through 2 full circles
         let mut successful_updates = 0;
         let mut lost_count = 0;
-        let target_id = match result1 {
-            ProcessResult::Promoted(id) => id,
-            _ => panic!("Expected Promoted"),
-        };
 
-        for rev in 2..num_revolutions {
+        for rev in 4..num_revolutions {
             let time = rev * revolution_ms;
             let angle = angular_velocity * (time as f64 / 1000.0);
             let (lat, lon) = position_at_angle(angle);
@@ -1219,7 +1234,7 @@ mod tests {
         );
 
         // Should have maintained tracking for at least 90% of updates
-        let expected_updates = (num_revolutions - 2) as usize;
+        let expected_updates = (num_revolutions - 4) as usize;
         let min_successful = (expected_updates as f64 * 0.9) as usize;
         assert!(
             successful_updates >= min_successful,
@@ -1288,28 +1303,25 @@ mod tests {
 
         // Start tracking
         let (lat0, lon0) = position_at_angle(0.0);
-        let candidate0 = make_candidate(lat0, lon0, 0);
-        tracker.process_candidate(candidate0);
+        let result0 = tracker.process_candidate(make_candidate(lat0, lon0, 0));
+        let target_id = match result0 {
+            ProcessResult::NewAcquiring(id) => id,
+            _ => panic!("Expected NewAcquiring"),
+        };
 
-        // Second detection
-        let angle1 = angular_velocity * 3.0;
-        let (lat1, lon1) = position_at_angle(angle1);
-        let candidate1 = make_candidate(lat1, lon1, revolution_ms);
-        let result1 = tracker.process_candidate(candidate1);
-        assert!(
-            matches!(result1, ProcessResult::Promoted(_)),
-            "IMM should promote to tracking: {:?}",
-            result1
-        );
+        // Feed 3 more candidates to reach promotion (4 updates total)
+        for i in 1..4u64 {
+            let angle = angular_velocity * (i as f64 * 3.0);
+            let (lat, lon) = position_at_angle(angle);
+            tracker.process_candidate(make_candidate(lat, lon, i * revolution_ms));
+        }
+        let target = tracker.get_target(target_id).unwrap();
+        assert_eq!(target.status, TargetStatus::Tracking);
 
         let mut successful_updates = 0;
         let mut lost_count = 0;
-        let target_id = match result1 {
-            ProcessResult::Promoted(id) => id,
-            _ => panic!("Expected Promoted"),
-        };
 
-        for rev in 2..num_revolutions {
+        for rev in 4..num_revolutions {
             let time = rev * revolution_ms;
             let angle = angular_velocity * (time as f64 / 1000.0);
             let (lat, lon) = position_at_angle(angle);
@@ -1335,7 +1347,7 @@ mod tests {
         );
 
         // IMM should maintain tracking through continuous turns
-        let expected_updates = (num_revolutions - 2) as usize;
+        let expected_updates = (num_revolutions - 4) as usize;
         let min_successful = (expected_updates as f64 * 0.9) as usize;
         assert!(
             successful_updates >= min_successful,
@@ -1397,33 +1409,31 @@ mod tests {
         let revolution_ms = 3000u64;
         let num_revolutions = (2.0 * circle_time_s / 3.0).ceil() as u64 + 2;
 
-        // First 2 detections are in guard zone (target gets acquired)
+        // First 4 detections are in guard zone (target gets acquired and promoted)
         let (lat0, lon0) = position_at_angle(0.0);
-        let candidate0 = make_candidate_with_source(lat0, lon0, 0, CandidateSource::GuardZone(1));
-        tracker.process_candidate(candidate0);
-
-        let angle1 = angular_velocity * 3.0;
-        let (lat1, lon1) = position_at_angle(angle1);
-        let candidate1 =
-            make_candidate_with_source(lat1, lon1, revolution_ms, CandidateSource::GuardZone(1));
-        let result1 = tracker.process_candidate(candidate1);
-        assert!(
-            matches!(result1, ProcessResult::Promoted(_)),
-            "Should promote to tracking: {:?}",
-            result1
-        );
-
-        let target_id = match result1 {
-            ProcessResult::Promoted(id) => id,
-            _ => panic!("Expected Promoted"),
+        let result0 =
+            tracker.process_candidate(make_candidate_with_source(lat0, lon0, 0, CandidateSource::GuardZone(1)));
+        let target_id = match result0 {
+            ProcessResult::NewAcquiring(id) => id,
+            _ => panic!("Expected NewAcquiring"),
         };
+
+        for i in 1..4u64 {
+            let angle = angular_velocity * (i as f64 * 3.0);
+            let (lat, lon) = position_at_angle(angle);
+            tracker.process_candidate(make_candidate_with_source(
+                lat, lon, i * revolution_ms, CandidateSource::GuardZone(1),
+            ));
+        }
+        let target = tracker.get_target(target_id).unwrap();
+        assert_eq!(target.status, TargetStatus::Tracking);
 
         // Remaining detections are OUTSIDE guard zone (CandidateSource::Anywhere)
         // These should still match the existing active target
         let mut successful_updates = 0;
         let mut lost_count = 0;
 
-        for rev in 2..num_revolutions {
+        for rev in 4..num_revolutions {
             let time = rev * revolution_ms;
             let angle = angular_velocity * (time as f64 / 1000.0);
             let (lat, lon) = position_at_angle(angle);
@@ -1454,7 +1464,7 @@ mod tests {
         );
 
         // Should maintain tracking even when leaving guard zone
-        let expected_updates = (num_revolutions - 2) as usize;
+        let expected_updates = (num_revolutions - 4) as usize;
         let min_successful = (expected_updates as f64 * 0.9) as usize;
         assert!(
             successful_updates >= min_successful,
@@ -1664,9 +1674,10 @@ mod tests {
 
                 if matches!(result, ProcessResult::NewAcquiring(_)) {
                     new_target_count += 1;
-                    // After revolution 3, the first target should be established
+                    // After revolution 5, the first target should be established
+                    // (4 updates for promotion + 1 for established tracking)
                     // Any new targets after that indicate misses
-                    if rev >= 3 {
+                    if rev >= 5 {
                         miss_after_established += 1;
                     }
                 }
@@ -1722,8 +1733,8 @@ mod tests {
                 "Medium speed: Expected target to be promoted to tracking"
             );
 
-            // After promotion at rev 1, we should have updates for revs 2-14 (13 updates)
-            let expected_updates = num_revolutions - 2;
+            // After promotion at rev 3, we should have updates for revs 4-14 (11 updates)
+            let expected_updates = num_revolutions - 4;
             assert!(
                 update_count >= expected_updates - 1,
                 "Medium speed: Expected at least {} updates after promotion, got {}",
@@ -1775,7 +1786,7 @@ mod tests {
                 "Fast speed: Expected target to be promoted to tracking"
             );
 
-            let expected_updates = num_revolutions - 2;
+            let expected_updates = num_revolutions - 4;
             assert_eq!(
                 update_count, expected_updates,
                 "Fast speed: Expected all {} updates after promotion, got {}",
