@@ -45,6 +45,7 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 - doppler_auto_track setting is now persisted across restarts
 - GUI do_change no longer crashes with TypeError when a control is changed before its state is received from the server
 - GUI clears all displayed targets when radar connection is lost
+- GUI showed DISCONNECTED in Firefox after server restart due to unnecessary state reset when spoke stream reconnect triggered a redundant state stream reconnect
 - Heading extracted from spoke data for GUI when no external heading source available
 - Furuno spoke data sockets retry on failure instead of silently staying dead
 - Accept 0xc2 as valid Navico spoke status for HALO20+ compatibility (#27)

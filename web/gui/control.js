@@ -1603,6 +1603,12 @@ function connectStateStream(streamUrl, radarIdParam) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  // Only show DISCONNECTED if the state stream wasn't already open.
+  // When loadRadar restarts the spoke stream it also calls connectStateStream,
+  // which may replace a working state connection. Showing DISCONNECTED in that
+  // case causes a visible flash while waiting for the server to re-send power
+  // state — Firefox is slower to complete this round-trip than Chrome/Safari.
+  const wasConnected = stateWebSocket?.readyState === WebSocket.OPEN;
   if (stateWebSocket) {
     stateWebSocket.close();
     stateWebSocket = null;
@@ -1623,8 +1629,9 @@ function connectStateStream(streamUrl, radarIdParam) {
     // Power state will be updated when we receive the first control values
   };
 
-  // Set power to off while connecting
-  notifyDisconnected();
+  if (!wasConnected) {
+    notifyDisconnected();
+  }
 
   ws.onmessage = (event) => {
     try {
