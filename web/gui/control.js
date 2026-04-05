@@ -1493,7 +1493,7 @@ function do_change(v) {
   let id = html_to_server_id(v.id);
 
   let control = getControl(id);
-  let update = myr_control_values[id];
+  let update = myr_control_values[id] ?? { id };
   let message = {};
   let value = v.value;
 
@@ -1503,7 +1503,7 @@ function do_change(v) {
   }
 
   // Check if auto mode is active from current control state
-  let auto = update?.auto || false;
+  let auto = update.auto || false;
   update.auto = auto;
   message.auto = auto;
   if (auto && control.hasAutoAdjustable) {
