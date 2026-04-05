@@ -169,8 +169,15 @@ pub(crate) fn get_cog() -> Option<f64> {
 }
 
 pub(crate) fn set_cog(cog: Option<f64>) {
+    use std::f64::consts::TAU;
+
     if let Some(c) = cog {
-        COG.store(c, Ordering::Release);
+        assert!(
+            c > -TAU && c < 2.0 * TAU,
+            "set_cog: COG {c} rad ({} deg) is out of range",
+            c.to_degrees()
+        );
+        COG.store(c.rem_euclid(TAU), Ordering::Release);
     } else {
         COG.store(f64::NAN, Ordering::Release);
     }
