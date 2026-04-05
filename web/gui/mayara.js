@@ -1,4 +1,4 @@
-import van from "./van-1.5.2.debug.js";
+import van from "./vendor/van-1.5.2.debug.js";
 import {
   fetchRadars,
   fetchInterfaces,

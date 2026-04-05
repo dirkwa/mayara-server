@@ -28,7 +28,7 @@ import {
   unsubscribeFromAis,
 } from "./control.js";
 import { isStandaloneMode, detectMode } from "./api.js";
-import "./protobuf/protobuf.min.js";
+import "./vendor/protobuf.min.js";
 
 import { WebGPURenderer } from "./render_webgpu.js";
 import { WebGLRenderer } from "./render_webgl.js";

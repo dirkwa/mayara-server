@@ -30,7 +30,7 @@ export {
   unsubscribeFromAis,
 };
 
-import van from "./van-1.5.2.js";
+import van from "./vendor/van-1.5.2.js";
 import { toUser } from "./units.js";
 import {
   fetchRadars,
