@@ -74,7 +74,8 @@ Command Line Options
 | `-n, --navigation-address <ADDR>` | Navigation service address for GPS/heading data  |
 |                                   | No value: auto-discover via mDNS                 |
 |                                   | Interface name: search mDNS on that interface    |
-|                                   | `udp-listen:ip:port`: listen for UDP broadcasts  |
+|                                   | `udp:ip:port`: listen for UDP broadcasts         |
+|                                   | `tcp:ip:port`: connect to TCP server             |
 | `--nmea0183`                      | Use NMEA 0183 instead of Signal K for navigation |
 | `--pass-ais`                      | Forward AIS targets from Signal K to GUI clients |
 
@@ -157,7 +158,7 @@ mayara-server --tls-cert /path/to/cert.pem --tls-key /path/to/key.pem
 
 ```bash
 # Listen for NMEA 0183 on specific UDP port
-mayara-server --nmea0183 -n udp-listen:0.0.0.0:10110
+mayara-server --nmea0183 -n udp:0.0.0.0:10110
 ```
 
 ## Web Interface
