@@ -151,7 +151,7 @@ fn pixel_to_blob(legend: &Legend) -> [[u8; BYTE_LOOKUP_LENGTH]; LOOKUP_DOPPLER_L
                 lookup[LookupDoppler::HighBoth as usize][j] = match high {
                     0x0f => doppler_approaching,
                     0x0e => doppler_receding,
-                    0x08..=0x0d => low + 2,
+                    0x08..=0x0d => high + 2,
                     _ => high + 1,
                 };
             }
