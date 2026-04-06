@@ -104,8 +104,7 @@ pub async fn set_control(
             }
         }
         ControlId::MainBangSuppression => {
-            let on_off = 1 - auto; // Ftc is really an on/off switch, so invert auto
-            standard_command(&mut cmd, &[0x01, 0x82], on_off);
+            standard_command(&mut cmd, &[0x01, 0x82], value as u8);
         }
         ControlId::DisplayTiming => {
             cmd.extend_from_slice(&[

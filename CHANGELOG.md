@@ -23,6 +23,7 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 
 ### Fixed
 
+- Raymarine HD main bang suppression control was missing, causing error in logs (#35)
 - Multicast reception on multi-homed interfaces (multiple IPs on one NIC) (#51)
 - Furuno range report no longer rejects radars set to km or sm display units
 - All control values now include timestamps in state broadcasts

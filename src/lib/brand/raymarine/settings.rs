@@ -101,6 +101,7 @@ pub fn new(
                 builder = builder.has_enabled();
             }
             builder.build(&mut controls);
+            new_list(ControlId::MainBangSuppression, &["Off", "On"]).build(&mut controls);
         }
     }
     new_string(ControlId::SerialNumber).build(&mut controls);
