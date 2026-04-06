@@ -218,7 +218,7 @@ static RANGE_TABLE_DRS_NXT_EXTENDED_KM: &[i32] = &[
     96000, // 96 km
 ];
 
-/// Range table for standard DRS series in km mode (up to 36 km)
+/// Range table for standard DRS series in km mode (up to 96 km)
 static RANGE_TABLE_DRS_KM: &[i32] = &[
     125,   // 0.125 km
     250,   // 0.25 km
@@ -312,9 +312,10 @@ static RANGE_TABLE_FAR: &[i32] = &[
 fn get_ranges_by_model(model: &RadarModel) -> Vec<i32> {
     let (nm_table, km_table): (&[i32], &[i32]) = match model {
         // DRS-NXT series with extended ranges
-        RadarModel::DRS12ANXT | RadarModel::DRS25ANXT => {
-            (RANGE_TABLE_DRS_NXT_EXTENDED, RANGE_TABLE_DRS_NXT_EXTENDED_KM)
-        }
+        RadarModel::DRS12ANXT | RadarModel::DRS25ANXT => (
+            RANGE_TABLE_DRS_NXT_EXTENDED,
+            RANGE_TABLE_DRS_NXT_EXTENDED_KM,
+        ),
 
         // DRS-NXT series (standard)
         RadarModel::DRS4DNXT | RadarModel::DRS6ANXT => {
