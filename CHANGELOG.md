@@ -32,7 +32,7 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 ### Fixed
 
 - Furuno dual range: Route TCP report responses (Status, Gain, Sea, Rain, Tune) to the correct range (A or B) based on dual_range_id in the response
-- Furuno dual range: Power/Status and TimedIdle commands now include dual_range_id, and coupled transmit state is propagated to both ranges
+- Furuno dual range: correct drid field positions for all per-range commands (Status, Gain, Sea, Rain) — verified against live Wireshark captures
 - Furuno dual range: Range response now correctly reads unit from field 1 (was field 2, which is actually drid)
 - Furuno spoke header: dual_range_id is at byte 15 bit 6 (was incorrectly at byte 11 bits 6-7, which are always 0b11)
 - Furuno spoke header: init sends Range B command ($S62,9,0,1) to activate dual range spoke interleaving

@@ -31,15 +31,23 @@ must independently query all controls to learn the current state.
 | 60/00 | FreeCommand | `$S00,<name>,<text>` | `$N00,<name>,<value>` | Named key-value pairs (Fan1Status, TILEEAV, etc.) |
 | 61 | DispMode | `$S61,<status>,<dir>,<screen>` | `$N61,<status>,<dir>,<screen>` | Display mode (head-up/north-up/course-up) |
 | 62 | Range | `$S62,<wire_idx>,<unit>,<drid>` | `$N62,<wire_idx>,<unit>,<drid>` | Range selection. **Range B spokes only start after a Set with drid=1.** DRS4D-NXT clamps Range B to max wire_idx 11 (12 NM). |
-| 63 | Gain | `$S63,<auto>,<val>,<screen>,<auto_val>,<drid>` | `$N63,<auto>,<val>,<screen>,<auto_val>,<drid>` | Gain control |
-| 64 | Sea | `$S64,<auto>,<val>,<auto_val>,<screen>,0,<drid>` | `$N64,<auto>,<val>,<auto_val>,<screen>,0,<drid>` | Sea clutter |
-| 65 | Rain | `$S65,<auto>,<val>,0,<screen>,<drid>,0` | `$N65,<auto>,<val>,0,<screen>,<drid>,0` | Rain clutter |
+| 63 | Gain | `$S63,<auto>,<val>,<drid>,<auto_val>,0` | `$N63,<auto>,<val>,<drid>,<auto_val>,0` | Gain control. Radar echoes to both ranges. |
+| 64 | Sea | `$S64,<auto>,<val>,<auto_val>,<drid>,0,0` | `$N64,<auto>,<val>,<auto_val>,<drid>,0,0` | Sea clutter. Radar echoes to both ranges. |
+| 65 | Rain | `$S65,<auto>,<val>,0,<drid>,0,0` | `$N65,<auto>,<val>,0,<drid>,0,0` | Rain clutter. Radar echoes to both ranges. |
 | 66 | CustomPictureAll | `$R66` or `$R66,99` | `$N66,<26 values>` | Query all 26 signal processing features |
 | 67 | CustomPicture | `$S67,0,<feat>,<val>,<screen>` | `$N67,0,<feat>,<val>,<screen>` | Individual signal processing feature |
 | 68 | PulseWidth | `$S68,<pulse>,<range>,<unit>,<imgNo>,<screen>` | `$N68,<pulse>,<range>,<unit>,<imgNo>,<screen>` | Pulse width selection |
-| 69 | TxSTBY | `$S69,<status>,<wman>,<wsend>,<wstop>,0,<drid>` | `$N69,<status>,<wman>,<wsend>,<wstop>,0,<drid>` | TX/Standby + watchman |
+| 69 | TxSTBY | `$S69,<status>,<drid>,<wman>,<wsend>,<wstop>,0` | `$N69,<status>,<drid>,<wman>,<wsend>,<wstop>,0` | TX/Standby + watchman |
 
-`<drid>` = dual_range_id (0=Range A, 1=Range B). `<screen>` also used for dual range in some commands.
+`<drid>` = dual_range_id (0=Range A, 1=Range B). The position of `<drid>` varies per command
+(see table above). The radar echoes per-range commands (Gain, Sea, Rain) to **both** ranges
+in the response — e.g., setting Gain with drid=0 produces responses for both drid=0 and drid=1.
+
+> **Note on sources:** The original field positions were derived from decompilation of
+> `Fec.FarApi.dll` and `MaxSea.Radar.dll`. The corrected positions above were verified
+> against live Wireshark captures from a DRS4D-NXT with TimeZero in dual range mode
+> (see `research/furuno/captures/`). Where the decompilation and live captures disagree,
+> the live captures are treated as authoritative.
 
 ### ARPA/Target Tracking
 

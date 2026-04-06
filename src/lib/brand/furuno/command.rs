@@ -451,7 +451,7 @@ impl CommandSender for Command {
 
         let id: CommandId = match cv.id {
             ControlId::Power => {
-                // Wire format: $S69,{status},0,{wman},{w_send},{w_stop},0,{drid}
+                // Wire format: $S69,{status},{drid},{wman},{w_send},{w_stop},0
                 let value = match Power::from_value(&cv.as_value()?).unwrap_or(Power::Standby) {
                     Power::Transmit => 2,
                     _ => 1,
@@ -462,19 +462,18 @@ impl CommandSender for Command {
                 let w_stop = self.get_timed_idle_standby();
 
                 cmd.push(value); // status
-                cmd.push(0);
+                cmd.push(self.dual_range_id);
                 cmd.push(wman);
                 cmd.push(w_send);
                 cmd.push(w_stop);
                 cmd.push(0);
-                cmd.push(self.dual_range_id);
 
                 CommandId::Status
             }
 
             ControlId::TimedIdle | ControlId::TimedRun => {
                 // Resend the Status command with updated watchman settings.
-                // Wire format: $S69,{status},0,{wman},{w_send},{w_stop},0,{drid}
+                // Wire format: $S69,{status},{drid},{wman},{w_send},{w_stop},0
                 let power = self
                     .controls
                     .get(&ControlId::Power)
@@ -496,12 +495,11 @@ impl CommandSender for Command {
                 let w_stop = (600 - w_send).max(60);
 
                 cmd.push(status);
-                cmd.push(0);
+                cmd.push(self.dual_range_id);
                 cmd.push(wman);
                 cmd.push(w_send);
                 cmd.push(w_stop);
                 cmd.push(0);
-                cmd.push(self.dual_range_id);
 
                 CommandId::Status
             }
@@ -539,32 +537,32 @@ impl CommandSender for Command {
             }
 
             ControlId::Gain => {
-                // Per-range: $S63,{auto},{value},0,80,{dual_range_id}
+                // Per-range: $S63,{auto},{value},{drid},{auto_val},0
                 cmd.push(auto);
                 cmd.push(value);
-                cmd.push(0);
-                cmd.push(80);
                 cmd.push(self.dual_range_id);
+                cmd.push(80);
+                cmd.push(0);
                 CommandId::Gain
             }
             ControlId::Sea => {
-                // Per-range: $S64,{auto},{value},50,0,0,{dual_range_id}
+                // Per-range: $S64,{auto},{value},{auto_val},{drid},0,0
                 cmd.push(auto);
                 cmd.push(value);
                 cmd.push(50);
-                cmd.push(0);
-                cmd.push(0);
                 cmd.push(self.dual_range_id);
+                cmd.push(0);
+                cmd.push(0);
                 CommandId::Sea
             }
             ControlId::Rain => {
-                // Per-range: $S65,{auto},{value},0,0,0,{dual_range_id}
+                // Per-range: $S65,{auto},{value},0,{drid},0,0
                 cmd.push(auto);
                 cmd.push(value);
                 cmd.push(0);
-                cmd.push(0);
-                cmd.push(0);
                 cmd.push(self.dual_range_id);
+                cmd.push(0);
+                cmd.push(0);
                 CommandId::Rain
             }
 

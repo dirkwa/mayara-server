@@ -211,11 +211,14 @@ communicates with the DRS antenna using ASCII command strings sent via `Fnet.dll
 ### Command Format
 
 ```
-$<prefix><cmd_id>,<param1>,<param2>,...,<dual_range_id>\r\n
+$<prefix><cmd_id>,<param1>,<param2>,...\r\n
 ```
 
-The **dual range ID is always the last parameter** in every command. This is how the DRS
-antenna knows which range a command applies to.
+> **Note:** The decompilation of `Fec.FarApi.dll` suggested that the dual range ID is
+> always the last parameter. Live Wireshark captures from DRS4D-NXT with TimeZero show
+> this is **not the case** — the `drid` position varies per command (e.g., index 1 for
+> Status, index 2 for Gain, index 3 for Sea/Rain). See `tcp-command-reference.md` for
+> the verified per-command field positions.
 
 ### Prefix Characters
 
@@ -258,23 +261,34 @@ Command IDs are `0x60 + RadarCommandID` (hex):
 | 76  | 118 | TuneIndicator (22) | |
 | 77  | 119 | Blind (23)     | Blind sectors |
 
-### Key Command Formats
+### Key Command Formats (verified against live captures)
 
 **Range (0x62):**
 ```
-$S62,<range_index>,<unit>,<dual_range_id>\r\n
+$S62,<range_index>,<unit>,<drid>\r\n
 ```
-- `range_index`: native DLL range index (0-20, see translation tables above)
-- `unit`: distance unit
-- `dual_range_id`: 0 = Range A, 1 = Range B
 
 **TX/Standby (0x69):**
 ```
-$S69,<status>,<wman>,<w_send>,<w_stop>,<?>,<dual_range_id>\r\n
+$S69,<status>,<drid>,<wman>,<w_send>,<w_stop>,0\r\n
 ```
-- `status`: 1 = Standby, 2 = Transmit
-- `wman`: watchman mode
-- `w_send`, `w_stop`: watchman timer values
+
+**Gain (0x63):**
+```
+$S63,<auto>,<value>,<drid>,<auto_val>,0\r\n
+```
+
+**Sea clutter (0x64):**
+```
+$S64,<auto>,<value>,<auto_val>,<drid>,0,0\r\n
+```
+
+**Rain clutter (0x65):**
+```
+$S65,<auto>,<value>,0,<drid>,0,0\r\n
+```
+
+All `<drid>` values: 0 = Range A, 1 = Range B.
 
 **Query (any command):**
 ```

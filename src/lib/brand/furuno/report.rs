@@ -348,27 +348,36 @@ impl FurunoReportReceiver {
     }
 
     /// Extract the dual range ID from a per-range response.
-    /// Per the wire protocol, per-range responses include a `drid` field:
-    ///   Status: $N69,{status},{wman},{?},{w_send},{w_stop},0,{drid} — last field
-    ///   Gain:   $N63,{auto},{val},{screen},{auto_val},{drid} — last field
-    ///   Sea:    $N64,{auto},{val},{auto_val},{screen},0,{drid} — last field
-    ///   Rain:   $N65,{auto},{val},0,{screen},{drid},0 — position 4
-    ///   Tune:   $N75,{auto},{value},{screen} — screen is drid
+    /// Verified against live Wireshark captures from DRS4D-NXT with TimeZero.
+    /// The drid position varies per command:
+    ///   Status: $N69,{status},{drid},{wman},{w_send},{w_stop},0 — index 1
+    ///   Gain:   $N63,{auto},{val},{drid},{auto_val},0            — index 2
+    ///   Sea:    $N64,{auto},{val},{auto_val},{drid},0,0          — index 3
+    ///   Rain:   $N65,{auto},{val},0,{drid},0,0                  — index 3
+    ///   Range:  $N62,{wire_idx},{unit},{drid}                    — index 2
+    ///   Tune:   $N75,{auto},{value},{drid}                       — index 2
     fn extract_drid(&self, command_id: &CommandId, numbers: &[f64]) -> u8 {
         if self.common_b.is_none() {
             return 0;
         }
         let drid = match command_id {
-            CommandId::Rain => {
-                // $N65,{auto},{val},0,{screen},{drid},0 — drid at index 4
-                numbers.get(4).copied().unwrap_or(0.0)
+            CommandId::Status => {
+                // $N69,{status},{drid},{wman},{w_send},{w_stop},0
+                numbers.get(1).copied().unwrap_or(0.0)
             }
-            CommandId::Tune => {
-                // $N75,{auto},{value},{screen} — screen is drid
+            CommandId::Gain | CommandId::Range | CommandId::Tune => {
+                // $N63,{auto},{val},{drid},{auto_val},0
+                // $N62,{wire_idx},{unit},{drid}
+                // $N75,{auto},{value},{drid}
                 numbers.get(2).copied().unwrap_or(0.0)
             }
+            CommandId::Sea | CommandId::Rain => {
+                // $N64,{auto},{val},{auto_val},{drid},0,0
+                // $N65,{auto},{val},0,{drid},0,0
+                numbers.get(3).copied().unwrap_or(0.0)
+            }
             _ => {
-                // Most per-range commands: drid is the last field
+                // Unknown commands: assume last field
                 numbers.last().copied().unwrap_or(0.0)
             }
         };
@@ -452,7 +461,7 @@ impl FurunoReportReceiver {
             }
 
             CommandId::Status => {
-                // Response format: $N69,{status},{wman},{?},{w_send},{w_stop},0,{drid}
+                // Response format: $N69,{status},{drid},{wman},{w_send},{w_stop},0
                 if numbers.len() < 1 {
                     bail!("No arguments for Status command");
                 }
@@ -470,7 +479,7 @@ impl FurunoReportReceiver {
                 target.set_value(&ControlId::Power, power_value);
 
                 if numbers.len() >= 5 {
-                    let wman = numbers[1] as i32;
+                    let wman = numbers[2] as i32;
                     let w_send = numbers[3];
                     target.set_value(&ControlId::TimedIdle, wman as f64);
                     target.set_value(&ControlId::TimedRun, w_send);
