@@ -166,7 +166,7 @@ pub fn update_when_model_known(info: &mut RadarInfo, model: RadarModel, version:
     // Tuning
     if cap.tune {
         info.controls.add(
-            new_auto(ControlId::Tune, 0., 100., HAS_AUTO_NOT_ADJUSTABLE),
+            new_auto(ControlId::Tune, 0., 2000., HAS_AUTO_NOT_ADJUSTABLE),
         );
     }
 

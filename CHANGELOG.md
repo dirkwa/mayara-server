@@ -31,7 +31,13 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 
 ### Fixed
 
-- Furuno spoke header: radar_id now correctly read from byte 11 bits 6-7 (was incorrectly reading byte 13)
+- Furuno dual range: Route TCP report responses (Status, Gain, Sea, Rain, Tune) to the correct range (A or B) based on dual_range_id in the response
+- Furuno dual range: Power/Status and TimedIdle commands now include dual_range_id, and coupled transmit state is propagated to both ranges
+- Furuno dual range: Range response now correctly reads unit from field 1 (was field 2, which is actually drid)
+- Furuno spoke header: dual_range_id is at byte 15 bit 6 (was incorrectly at byte 11 bits 6-7, which are always 0b11)
+- Furuno spoke header: init sends Range B command ($S62,9,0,1) to activate dual range spoke interleaving
+- Furuno tune control max increased from 100 to 2000 to accommodate raw radar values
+- Furuno spoke header: heading_valid now correctly read from byte 11 bit 5 (was reading byte 15 bits 4-5)
 - Furuno spoke header: heading_valid now correctly read from byte 11 bit 5 (was reading byte 15 bits 4-5)
 - Furuno spoke header: range wire index masked to 6 bits, angle/heading masked to 13 bits
 - Furuno frequent heartbeat ($NAF) and NN3 diagnostic ($NF5) messages no longer cause log noise

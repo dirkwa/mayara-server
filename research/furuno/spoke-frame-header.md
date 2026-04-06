@@ -41,7 +41,7 @@ Each spoke within the frame:
 | 11 | [2:0] | `sample_count_hi` | Bits 0-2: high 3 bits. Full count = `(byte[11] & 0x07) << 8 \| byte[10]`. Typical: 883 samples. |
 | 11 | [4:3] | `encoding` | Compression type (0-3). See encoding table below. |
 | 11 | [5] | `heading_valid` | 1 = heading data in per-spoke headers is valid. 0 = no heading from antenna. |
-| 11 | [7:6] | `radar_id` | **Radar identifier (0-3).** In dual range mode: 0 = Range A, 1 = Range B. Used by radar.dll to index into the per-radar sweep buffer: `buffer_base + radar_id * 0x104024`. |
+| 11 | [7:6] | `unknown_11_67` | Always observed as `0b11` (value 3) on DRS4D-NXT. Originally thought to be radar_id, but the actual dual range identifier is at byte 15 bit 6. The radar.dll disassembly shows these bits indexing into a sweep buffer, but on-wire captures show they do not vary between Range A and Range B. |
 
 ### Bytes 12-15: Range and Status
 
@@ -55,7 +55,8 @@ Each spoke within the frame:
 | 15 | [2:0] | `range_value_hi` | High 3 bits. Full value = `(byte[15] & 0x07) << 8 \| byte[14]`. |
 | 15 | [3] | `flag_bit3` | Unknown flag (saved in radar.dll as `var_dfh`). |
 | 15 | [5:4] | `echo_type` | Echo type indicator. 0 = no secondary echo data, nonzero = secondary echo present. Also related to heading validity — passed as the `hdg_flg` callback parameter. |
-| 15 | [7:6] | `status_bits` | Additional status bits. |
+| 15 | [6] | `dual_range_id` | **Dual range identifier.** 0 = Range A, 1 = Range B. Confirmed via on-wire capture: Range A frames have byte 15 = 0x09, Range B frames have byte 15 = 0x49 (bit 6 set). |
+| 15 | [7] | `status_bit7` | Unknown status bit. |
 
 ## Per-Spoke Sub-Header (4 bytes per spoke)
 

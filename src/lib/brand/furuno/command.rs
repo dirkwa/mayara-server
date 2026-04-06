@@ -211,16 +211,19 @@ pub(crate) struct Command {
     /// Dual range ID appended to per-range commands (0 = Range A, 1 = Range B).
     /// Set by the receiver before each set_control call to target the correct range.
     pub dual_range_id: i32,
+    /// Whether this radar supports dual range (NXT models).
+    pub has_dual_range: bool,
 }
 
 impl Command {
-    pub fn new(info: &RadarInfo) -> Self {
+    pub fn new(info: &RadarInfo, has_dual_range: bool) -> Self {
         Command {
             key: info.key(),
             write: None,
             controls: info.controls.clone(),
             ranges: info.ranges.clone(),
             dual_range_id: 0,
+            has_dual_range,
         }
     }
 
@@ -358,7 +361,7 @@ impl Command {
         self.send(CommandMode::Request, CommandId::TxTime, &[0])
             .await?; // $R8F,0
 
-        // Query current state of all controls
+        // Query current state of all controls (Range A)
         self.send(CommandMode::Request, CommandId::Status, &[])
             .await?; // $R69
 
@@ -406,6 +409,16 @@ impl Command {
             self.send(CommandMode::Request, CommandId::TargetAnalyzer, &[])
                 .await?; // $REF - Target Analyzer (Doppler)
         }
+
+        // Activate dual range: send a Range command for Range B.
+        // The radar firmware only starts interleaving Range B spokes once it
+        // receives a command with drid=1. We set Range B to 6 NM (wire_idx=9)
+        // as a sensible default for the secondary range.
+        if self.has_dual_range {
+            self.send(CommandMode::Set, CommandId::Range, &[9, WIRE_UNIT_NM, 1])
+                .await?; // $S62,9,0,1 — set Range B to 6 NM
+        }
+
         Ok(())
     }
 
@@ -436,6 +449,7 @@ impl CommandSender for Command {
 
         let id: CommandId = match cv.id {
             ControlId::Power => {
+                // Wire format: $S69,{status},0,{wman},{w_send},{w_stop},0,{drid}
                 let value = match Power::from_value(&cv.as_value()?).unwrap_or(Power::Standby) {
                     Power::Transmit => 2,
                     _ => 1,
@@ -451,13 +465,14 @@ impl CommandSender for Command {
                 cmd.push(w_send);
                 cmd.push(w_stop);
                 cmd.push(0);
+                cmd.push(self.dual_range_id);
 
                 CommandId::Status
             }
 
             ControlId::TimedIdle | ControlId::TimedRun => {
                 // Resend the Status command with updated watchman settings.
-                // The radar uses the Status command for both power and watchman.
+                // Wire format: $S69,{status},0,{wman},{w_send},{w_stop},0,{drid}
                 let power = self
                     .controls
                     .get(&ControlId::Power)
@@ -484,6 +499,7 @@ impl CommandSender for Command {
                 cmd.push(w_send);
                 cmd.push(w_stop);
                 cmd.push(0);
+                cmd.push(self.dual_range_id);
 
                 CommandId::Status
             }
