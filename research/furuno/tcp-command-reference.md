@@ -15,6 +15,13 @@ $N<hex_id>,<params>     Response/notification (radar → client)
 
 The hex ID is `0x60 + RadarCommandID` enum value, transmitted as uppercase hex.
 
+## Connection Isolation
+
+Each TCP connection to the radar receives responses **only to commands sent on that
+connection**. A second client connected to the same radar will not receive responses
+to the first client's commands. This means each display unit (TimeZero, Mayara, etc.)
+must independently query all controls to learn the current state.
+
 ## Complete Command Table
 
 ### Core Radar Controls
@@ -23,7 +30,7 @@ The hex ID is `0x60 + RadarCommandID` enum value, transmitted as uppercase hex.
 |-----|------|-----------|-----------------|-------------|
 | 60/00 | FreeCommand | `$S00,<name>,<text>` | `$N00,<name>,<value>` | Named key-value pairs (Fan1Status, TILEEAV, etc.) |
 | 61 | DispMode | `$S61,<status>,<dir>,<screen>` | `$N61,<status>,<dir>,<screen>` | Display mode (head-up/north-up/course-up) |
-| 62 | Range | `$S62,<wire_idx>,<unit>,<drid>` | `$N62,<wire_idx>,<unknown>,<unit>` | Range selection |
+| 62 | Range | `$S62,<wire_idx>,<unit>,<drid>` | `$N62,<wire_idx>,<unit>,<drid>` | Range selection. **Range B spokes only start after a Set with drid=1.** DRS4D-NXT clamps Range B to max wire_idx 11 (12 NM). |
 | 63 | Gain | `$S63,<auto>,<val>,<screen>,<auto_val>,<drid>` | `$N63,<auto>,<val>,<screen>,<auto_val>,<drid>` | Gain control |
 | 64 | Sea | `$S64,<auto>,<val>,<auto_val>,<screen>,0,<drid>` | `$N64,<auto>,<val>,<auto_val>,<screen>,0,<drid>` | Sea clutter |
 | 65 | Rain | `$S65,<auto>,<val>,0,<screen>,<drid>,0` | `$N65,<auto>,<val>,0,<screen>,<drid>,0` | Rain clutter |
@@ -76,7 +83,7 @@ The hex ID is `0x60 + RadarCommandID` enum value, transmitted as uppercase hex.
 |-----|------|--------|-------------|
 | 6E | AntennaType | `<type>,<pos>,<output>,<length>,<updown>,<atype>,<model2>` | Antenna info (7 params) |
 | 77 | BlindSector | `<s2_en>,<s1_start>,<s1_width>,<s2_start>,<s2_width>` | No-transmit sectors |
-| 83 | MBSAdjust | `<mbs>,<pulse>` | Main bang suppression (0-255, pulse) |
+| 83 | MBSAdjust | `<mbs>,<pulse>` | Main bang suppression (0-255, pulse). Auto-adjusts with range changes; during dual range the radar sends paired $N83 responses (one per range). |
 | 84 | AntennaHeight | `<monitorNo>,<height>,<height2>` | Antenna height |
 | 85 | NearSTC | `<curve>` | Near STC curve |
 | 86 | MiddleSTC | `<curve>` | Mid STC curve |
@@ -91,7 +98,7 @@ The hex ID is `0x60 + RadarCommandID` enum value, transmitted as uppercase hex.
 
 | Hex | Name | Format | Description |
 |-----|------|--------|-------------|
-| 75 | Tune | `<status>,<tune>,<screen>` | Tuning (auto/manual, value) |
+| 75 | Tune | `<status>,<tune>,<screen>` | Tuning (auto/manual). Value is raw ADC, observed up to 1475 on DRS4D-NXT (not 0-100). `<screen>` is drid for dual range. |
 | 76 | TuneIndicator | `<tune_volt>,<errFlag>,<screen>` | Tune readback |
 | 7A | TuneAdjust | `<status>` | Tune adjustment |
 | 80 | ATT | `<monNo>,<status>,<manual>` | Auto tune/timing |
@@ -286,23 +293,25 @@ From `MaxSea.Radar.dll` capability table (`RCpREUlX8k1` method):
 | AF | Heartbeat | Already handled implicitly. Could track for connection health. |
 | F5 | NN3Command | Hardware telemetry. Read-only diagnostic info. |
 
-### Recommended Fixes to Existing Code
+### Resolved Fixes (verified against live DRS4D-NXT)
 
-1. **Gain response parsing**: The capture shows the radar echoes Gain changes to
-   BOTH screens (`$N63,...,0` and `$N63,...,1`). Our report parser should handle
-   the screen parameter and route to the correct RadarInfo.
+1. **Gain/Sea/Rain/Tune response routing**: Per-range responses now routed to the
+   correct RadarInfo based on the drid field (last parameter for most commands,
+   position 4 for Rain, `<screen>` for Tune).
 
-2. **Sea/Rain response format**: The `<screen>` parameter position varies between
-   commands. Our current parser may be ignoring it. Need to verify parameter
-   positions against the capture data.
+2. **Range response format**: Corrected from `$N62,<wire_idx>,<unknown>,<unit>` to
+   `$N62,<wire_idx>,<unit>,<drid>`. The third field is the dual_range_id.
 
-3. **$N83 (MainBang) auto-updates**: The radar auto-adjusts MBS when range changes.
-   We should parse these unsolicited `$N83` responses and update the control value,
-   rather than only processing them as responses to our own requests.
+3. **$NF5 and $NAF handling**: Both are now silently handled (trace level).
 
-4. **$NF5 handling**: These NN3 diagnostic messages are very frequent and currently
-   cause "unknown command" log entries. Should be silently ignored or logged at
-   trace level.
+4. **Tune value range**: Raw ADC values up to 1475 observed; control max set to 2000.
 
-5. **$NAF handling**: The heartbeat `$NAF,256` is very frequent. Should be handled
-   at trace level to avoid log noise.
+### Remaining Items
+
+1. **$N83 (MainBang) auto-updates**: The radar auto-adjusts MBS when range changes
+   and sends paired responses during dual range. These unsolicited responses could
+   be parsed to update the control value per range.
+
+2. **Per-connection isolation**: Each TCP client must independently query controls.
+   There is no way to observe settings that another client (e.g., TimeZero) has
+   changed except by re-querying the radar.

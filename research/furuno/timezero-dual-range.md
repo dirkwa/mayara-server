@@ -302,15 +302,29 @@ For dual range on the same antenna, both source entries point to the **same host
 but carry different `rangeNo` values. The DRS firmware uses the `dual_range_id` parameter in
 each command to know which range context to apply it to.
 
+## Known Limitations (from live DRS4D-NXT testing)
+
+- **Range B maximum is 12 NM**: Setting wire_idx above 11 (12 NM) causes the radar to
+  acknowledge the new value but immediately send a second response clamping it back to 11.
+- **Range B spokes require activation**: The radar does not send Range B spoke data until
+  at least one Range Set command with drid=1 (`$S62,<idx>,<unit>,1`) has been sent. Simply
+  querying or setting other per-range controls is not sufficient.
+- **UDP spoke header**: The DLL callback's `radarNo` maps to byte 15 bit 6 of the raw UDP
+  frame header (0 = Range A, 1 = Range B). Byte 11 bits 6-7 — originally identified as
+  `radar_id` from disassembly — are always `0b11` on DRS4D-NXT and do NOT indicate the range.
+- **TCP connection isolation**: Each client gets its own TCP session. One client's commands
+  and responses are not visible to other connected clients.
+
 ## Summary for Implementation
 
-1. **No special "dual range on" command** — just configure `RmSetRadarSource` for both slots with
-   the same hostname and different `rangeNo` values (0 and 1)
+1. **Activate dual range** by sending a Range Set command for Range B: `$S62,<idx>,<unit>,1`.
+   The radar will begin interleaving Range B spokes in the UDP stream.
 2. **Set range independently** per logical radar with `RmcSetRange(0, ...)` and `RmcSetRange(1, ...)`
 3. **Transmit is coupled** on DRS models — toggling TX for either range toggles both
-4. **Spokes arrive interleaved** through one callback with `radarNo` identifying the range
+4. **Spokes arrive interleaved** through one callback with `radarNo` identifying the range.
+   On the wire, Range A/B is encoded in byte 15 bit 6 of the UDP frame header.
 5. **All controls are per-radarNo** — each range has independent gain, clutter, tune, etc.
-6. **Wire protocol**: ASCII commands `$S<hex_id>,<params>,<dual_range_id>\r\n` sent via UDP
+6. **Wire protocol**: ASCII commands `$S<hex_id>,<params>,<dual_range_id>\r\n` sent via TCP
    — the dual range ID (0 or 1) is the last parameter in every command
 7. The DRS antenna firmware handles the physical multiplexing transparently based on the
    dual range ID parameter

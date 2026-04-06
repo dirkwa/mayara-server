@@ -128,13 +128,15 @@ The callback wrapper in Fec.FarApi.dll also:
 
 2. **`have_heading`** (currently `(data[15] & 0x30) >> 3`): This reads bits [5:4] of byte 15 and shifts right by 3, giving a value 0-6. But per radar.dll, heading validity is primarily at **byte 11 bit 5**. The byte 15 bits [5:4] are `echo_type`, which relates to secondary echo data. Our code works in practice because both fields tend to be nonzero together when heading is present, but the correct field for heading validity is `(data[11] & 0x20) >> 5`.
 
-3. **`radar_no`** (currently `data[13]`): Per the radar.dll disassembly, the radar identifier is at **byte 11 bits [7:6]**, NOT byte 13. Byte 13 carries range resolution metadata. The correct extraction is `(data[11] & 0xC0) >> 6`.
+3. **`radar_no`** (was `data[13]`, then byte 11 bits 6-7): Live captures from DRS4D-NXT
+   show byte 11 bits 6-7 are always `0b11` and do NOT vary between Range A and Range B.
+   The actual dual_range_id is at **byte 15 bit 6**: `(data[15] & 0x40) >> 6`.
 
 ### Unused Fields We Can Now Use
 
 | Byte | Field | Use Case |
 |------|-------|----------|
-| 11 [7:6] | `radar_id` | **Dual range demuxing.** This is the correct field for Range A (0) vs Range B (1). Currently stored as `v3` but not used. |
+| 11 [7:6] | `unknown` | Always `0b11` on DRS4D-NXT. Purpose unknown — possibly antenna type or firmware variant. |
 | 11 [5] | `heading_valid` | **Correct heading validity flag.** Should replace the current byte 15 extraction. |
 | 1 | `sequence_number` | Packet loss detection / reordering. |
 | 2-3 | `total_length` | Frame integrity validation. |
@@ -144,12 +146,15 @@ The callback wrapper in Fec.FarApi.dll also:
 | 14-15 [2:0,7:0] | `range_value` | Secondary range representation (11-bit), possibly the actual distance. |
 | 15 [5:4] | `echo_type` | Secondary echo data presence (e.g., Doppler overlay). |
 
-## Recommended Fixes
+## Applied Fixes (verified against live DRS4D-NXT)
 
-1. **Fix `radar_id` extraction**: Change from `data[13]` to `(data[11] & 0xC0) >> 6`. This is our `v3` field that was already being computed but not used!
+1. **Fix `dual_range_id` extraction**: Changed to `(data[15] & 0x40) >> 6`. Byte 11 bits 6-7
+   are always 0b11 on DRS4D-NXT and do NOT indicate the range. Byte 15 bit 6 is 0 for Range A
+   and 1 for Range B, confirmed by alternating frames with different range values (e.g., 926m
+   and 11112m in dual range mode).
 
-2. **Fix `have_heading` extraction**: Change from `(data[15] & 0x30) >> 3` to `(data[11] & 0x20) >> 5`. This gives a clean 0/1 boolean.
+2. **Fix `have_heading` extraction**: Changed to `(data[11] & 0x20) >> 5`. Clean 0/1 boolean.
 
-3. **Mask `range_index`**: Change from `data[12]` to `data[12] & 0x3F` to isolate the 6-bit range wire index.
+3. **Mask `range_index`**: Changed to `data[12] & 0x3F` to isolate the 6-bit range wire index.
 
-4. **Mask per-spoke angles**: Apply `& 0x1FFF` to angle and heading values for correct 13-bit extraction.
+4. **Mask per-spoke angles**: Applied `& 0x1FFF` to angle and heading values for correct 13-bit extraction.
