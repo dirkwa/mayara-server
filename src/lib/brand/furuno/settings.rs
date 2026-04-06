@@ -19,6 +19,8 @@ pub fn new(
 ) -> SharedControls {
     let mut controls = HashMap::new();
 
+    // Controls present on all Furuno radars. Model-specific controls are added
+    // later in update_when_model_known() based on the capability table.
     new_string(ControlId::UserName)
         .read_only(false)
         .build(&mut controls);
@@ -36,12 +38,99 @@ pub fn new(
         .build(&mut controls);
 
     new_string(ControlId::SerialNumber).build(&mut controls);
-    new_list(ControlId::ScanSpeed, &["Normal", "Fast", "Auto"]).build(&mut controls);
-    new_numeric(ControlId::MainBangSuppression, 0., 100.).build(&mut controls);
-
     new_list(ControlId::RangeUnits, &["Nautical", "Metric"]).build(&mut controls);
 
     SharedControls::new(radar_id, sk_client_tx, args, controls)
+}
+
+/// Per-model capability flags, derived from MaxSea.Radar.dll capability table.
+#[allow(dead_code)]
+struct Capabilities {
+    auto_gain: bool,
+    auto_sea: bool,
+    auto_rain: bool,
+    dual_range: bool,
+    scan_speed: bool,
+    sector_blanking: bool,
+    main_bang_suppression: bool,
+    rez_boost: bool,
+    bird_mode: bool,
+    target_analyzer: bool,     // Doppler
+    target_analyzer_rain: bool,
+    noise_rejection: bool,
+    interference_rejection_levels: u8, // 0=none, 2=off/on, 4=off/low/med/high
+    tune: bool,
+    antenna_height: bool,
+    watchman: bool,
+}
+
+fn capabilities(model: &RadarModel) -> Capabilities {
+    match model {
+        // NXT series: full feature set
+        RadarModel::DRS4DNXT | RadarModel::DRS6ANXT
+        | RadarModel::DRS12ANXT | RadarModel::DRS25ANXT => Capabilities {
+            auto_gain: true, auto_sea: true, auto_rain: true,
+            dual_range: true, scan_speed: true, sector_blanking: true,
+            main_bang_suppression: true, rez_boost: true, bird_mode: true,
+            target_analyzer: true, target_analyzer_rain: true,
+            noise_rejection: true, interference_rejection_levels: 2,
+            tune: true, antenna_height: true, watchman: true,
+        },
+        // DRS6A X-Class: DRS + bird mode
+        RadarModel::DRS6AXCLASS => Capabilities {
+            auto_gain: true, auto_sea: true, auto_rain: true,
+            dual_range: false, scan_speed: false, sector_blanking: false,
+            main_bang_suppression: false, rez_boost: false, bird_mode: true,
+            target_analyzer: false, target_analyzer_rain: false,
+            noise_rejection: false, interference_rejection_levels: 0,
+            tune: true, antenna_height: false, watchman: false,
+        },
+        // DRS4DL: limited (no auto gain, no scan speed, no dual range)
+        RadarModel::DRS4DL => Capabilities {
+            auto_gain: false, auto_sea: true, auto_rain: true,
+            dual_range: false, scan_speed: false, sector_blanking: false,
+            main_bang_suppression: false, rez_boost: false, bird_mode: false,
+            target_analyzer: false, target_analyzer_rain: false,
+            noise_rejection: false, interference_rejection_levels: 2,
+            tune: true, antenna_height: false, watchman: false,
+        },
+        // Standard DRS
+        RadarModel::DRS | RadarModel::DRS4W => Capabilities {
+            auto_gain: true, auto_sea: true, auto_rain: true,
+            dual_range: false, scan_speed: false, sector_blanking: false,
+            main_bang_suppression: false, rez_boost: false, bird_mode: false,
+            target_analyzer: false, target_analyzer_rain: false,
+            noise_rejection: false, interference_rejection_levels: 0,
+            tune: true, antenna_height: false, watchman: false,
+        },
+        // FAR series: commercial, 4-level IR, no NXT features
+        RadarModel::FAR21x7 | RadarModel::FAR14x7 | RadarModel::FAR14x6 => Capabilities {
+            auto_gain: false, auto_sea: false, auto_rain: false,
+            dual_range: false, scan_speed: false, sector_blanking: false,
+            main_bang_suppression: false, rez_boost: false, bird_mode: false,
+            target_analyzer: false, target_analyzer_rain: false,
+            noise_rejection: false, interference_rejection_levels: 4,
+            tune: true, antenna_height: false, watchman: false,
+        },
+        // FAR-15x3 / FAR-3000: auto sea/rain, noise rejection
+        RadarModel::FAR15x3 | RadarModel::FAR3000 => Capabilities {
+            auto_gain: false, auto_sea: true, auto_rain: true,
+            dual_range: false, scan_speed: false, sector_blanking: false,
+            main_bang_suppression: false, rez_boost: false, bird_mode: false,
+            target_analyzer: false, target_analyzer_rain: false,
+            noise_rejection: true, interference_rejection_levels: 4,
+            tune: true, antenna_height: false, watchman: false,
+        },
+        // Unknown: basic capabilities
+        RadarModel::Unknown => Capabilities {
+            auto_gain: true, auto_sea: true, auto_rain: true,
+            dual_range: false, scan_speed: false, sector_blanking: false,
+            main_bang_suppression: false, rez_boost: false, bird_mode: false,
+            target_analyzer: false, target_analyzer_rain: false,
+            noise_rejection: false, interference_rejection_levels: 0,
+            tune: true, antenna_height: false, watchman: false,
+        },
+    }
 }
 
 pub fn update_when_model_known(info: &mut RadarInfo, model: RadarModel, version: &str) {
@@ -49,8 +138,6 @@ pub fn update_when_model_known(info: &mut RadarInfo, model: RadarModel, version:
     log::debug!("update_when_model_known: {}", model_name);
     info.controls.set_model_name(model_name.to_string());
 
-    // Update the UserName; it had to be present at start so it could be loaded from
-    // config. Override it if it is still the original 'key' internal name.
     if info.controls.user_name() == info.key() {
         let mut user_name = model_name.to_string();
         if let Some(serial_no) = info.serial_no.as_deref() {
@@ -69,56 +156,93 @@ pub fn update_when_model_known(info: &mut RadarInfo, model: RadarModel, version:
     );
     info.set_ranges(ranges);
 
-    // TODO: Add controls based on reverse engineered capability table
+    let cap = capabilities(&model);
 
     info.controls.add(new_string(ControlId::FirmwareVersion));
     info.controls
         .set_string(&ControlId::FirmwareVersion, version.to_string())
         .expect("FirmwareVersion");
 
-    info.controls.add(
-        new_sector(ControlId::NoTransmitSector1, -180., 180.)
-            .wire_offset(-1.)
-            .wire_units(Units::Degrees)
-            .has_enabled(),
-    );
-    info.controls.add(
-        new_sector(ControlId::NoTransmitSector2, -180., 180.)
-            .wire_offset(-1.)
-            .wire_units(Units::Degrees)
-            .has_enabled(),
-    );
+    // Tuning
+    if cap.tune {
+        info.controls.add(
+            new_auto(ControlId::Tune, 0., 100., HAS_AUTO_NOT_ADJUSTABLE),
+        );
+    }
 
-    // Add NXT-specific controls for NXT models
-    if matches!(
-        model,
-        RadarModel::DRS4DNXT | RadarModel::DRS6ANXT | RadarModel::DRS12ANXT | RadarModel::DRS25ANXT
-    ) {
-        info.dual_range = true;
+    // Antenna controls (shared across ranges)
+    if cap.sector_blanking {
+        info.controls.add(
+            new_sector(ControlId::NoTransmitSector1, -180., 180.)
+                .wire_offset(-1.)
+                .wire_units(Units::Degrees)
+                .has_enabled(),
+        );
+        info.controls.add(
+            new_sector(ControlId::NoTransmitSector2, -180., 180.)
+                .wire_offset(-1.)
+                .wire_units(Units::Degrees)
+                .has_enabled(),
+        );
+    }
+    if cap.scan_speed {
+        info.controls
+            .add(new_list(ControlId::ScanSpeed, &["Normal", "Fast", "Auto"]));
+    }
+    if cap.main_bang_suppression {
+        info.controls
+            .add(new_numeric(ControlId::MainBangSuppression, 0., 100.));
+    }
+    if cap.antenna_height {
+        info.controls.add(
+            new_numeric(ControlId::AntennaHeight, 0., 30.)
+                .wire_units(Units::Meters),
+        );
+    }
 
-        // Noise Reduction (Signal Processing feature 3)
+    // Interference rejection (model-dependent levels)
+    match cap.interference_rejection_levels {
+        2 => {
+            info.controls
+                .add(new_list(ControlId::InterferenceRejection, &["Off", "On"]));
+        }
+        4 => {
+            info.controls.add(new_list(
+                ControlId::InterferenceRejection,
+                &["Off", "Low", "Medium", "High"],
+            ));
+        }
+        _ => {}
+    }
+
+    // NXT-specific per-range features
+    if cap.noise_rejection {
         info.controls
             .add(new_list(ControlId::NoiseRejection, &["Off", "On"]));
-
-        // Interference Rejection (Signal Processing feature 0)
-        info.controls
-            .add(new_list(ControlId::InterferenceRejection, &["Off", "On"]));
-
-        // Target Separation (RezBoost / Beam Sharpening)
+    }
+    if cap.rez_boost {
         info.controls.add(new_list(
             ControlId::TargetSeparation,
             &["Off", "Low", "Medium", "High"],
         ));
-
-        // Bird Mode
+    }
+    if cap.bird_mode {
         info.controls.add(new_list(
             ControlId::BirdMode,
             &["Off", "Low", "Medium", "High"],
         ));
-
-        // Doppler (Target Analyzer): Off, Target, Rain
+    }
+    if cap.target_analyzer {
+        let doppler_options = if cap.target_analyzer_rain {
+            &["Off", "Target", "Rain"] as &[&str]
+        } else {
+            &["Off", "Target"]
+        };
         info.controls
-            .add(new_list(ControlId::Doppler, &["Off", "Target", "Rain"]));
+            .add(new_list(ControlId::Doppler, doppler_options));
+    }
+    if cap.dual_range {
+        info.dual_range = true;
     }
 }
 

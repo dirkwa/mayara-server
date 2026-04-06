@@ -24,12 +24,16 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 - ARPA target tracking documentation (`docs/arpa.md`)
 - Furuno range units support: Nautical (NM) and Metric (km) modes with per-model range tables
 - Furuno dual range support for NXT models: two independent radar instances (Range A/B) with shared TCP/UDP connections
+- Furuno per-model capability system: controls are now enabled based on the detected radar model
+- Furuno tuning control (auto/manual) for all models that support it
+- New Furuno command IDs: PulseWidth, Tune, TrailMode, RingSuppression, Heartbeat, NN3Command
 
 ### Fixed
 
 - Furuno spoke header: radar_id now correctly read from byte 11 bits 6-7 (was incorrectly reading byte 13)
 - Furuno spoke header: heading_valid now correctly read from byte 11 bit 5 (was reading byte 15 bits 4-5)
 - Furuno spoke header: range wire index masked to 6 bits, angle/heading masked to 13 bits
+- Furuno frequent heartbeat ($NAF) and NN3 diagnostic ($NF5) messages no longer cause log noise
 
 ### Fixed
 

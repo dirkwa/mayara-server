@@ -20,10 +20,12 @@ pub(crate) enum CommandId {
     Rain = 0x65,
     CustomPictureAll = 0x66,
     SignalProcessing = 0x67, // Multi-purpose: NoiseReduction, InterferenceRejection, etc.
+    PulseWidth = 0x68,
     Status = 0x69,
     U6D = 0x6D,
     AntennaType = 0x6E,
 
+    Tune = 0x75,
     BlindSector = 0x77,
 
     Att = 0x80,
@@ -32,6 +34,7 @@ pub(crate) enum CommandId {
     NearSTC = 0x85,
     MiddleSTC = 0x86,
     FarSTC = 0x87,
+    RingSuppression = 0x88,
     ScanSpeed = 0x89,
     AntennaSwitch = 0x8A,
     AntennaNo = 0x8D,
@@ -41,13 +44,16 @@ pub(crate) enum CommandId {
     Modules = 0x96,
 
     Drift = 0x9E,
+    TrailMode = 0xA3,
     ConningPosition = 0xAA,
     WakeUpCount = 0xAC,
+    Heartbeat = 0xAF, // $NAF,256 — frequent radar heartbeat
 
     STCRange = 0xD2,
     CustomMemory = 0xD3,
     BuildUpTime = 0xD4,
     DisplayUnitInformation = 0xD5,
+    TrailProcess = 0xE1,
     CustomATFSettings = 0xE0,
     AliveCheck = 0xE3,
     ATFSettings = 0xEA,
@@ -55,6 +61,7 @@ pub(crate) enum CommandId {
     RezBoost = 0xEE,       // Target Separation (beam sharpening)
     TargetAnalyzer = 0xEF, // Doppler mode
     AutoAcquire = 0xF0,
+    NN3Command = 0xF5, // Hardware diagnostics (frequent, read-only)
     RangeSelect = 0xFE,
 }
 
@@ -343,11 +350,18 @@ impl Command {
         self.send(CommandMode::Request, CommandId::Rain, &[])
             .await?; // $R65
 
-        self.send(CommandMode::Request, CommandId::ScanSpeed, &[])
-            .await?; // $R89
-
-        self.send(CommandMode::Request, CommandId::MainBangSize, &[0, 0])
-            .await?; // $R83,0,0
+        if self.controls.contains_key(&ControlId::Tune) {
+            self.send(CommandMode::Request, CommandId::Tune, &[])
+                .await?; // $R75
+        }
+        if self.controls.contains_key(&ControlId::ScanSpeed) {
+            self.send(CommandMode::Request, CommandId::ScanSpeed, &[])
+                .await?; // $R89
+        }
+        if self.controls.contains_key(&ControlId::MainBangSuppression) {
+            self.send(CommandMode::Request, CommandId::MainBangSize, &[0, 0])
+                .await?; // $R83,0,0
+        }
 
         self.send(CommandMode::Request, CommandId::BlindSector, &[])
             .await?; // $R77
@@ -495,6 +509,13 @@ impl CommandSender for Command {
                 cmd.push(value);
                 cmd.push(0);
                 CommandId::ScanSpeed
+            }
+            ControlId::Tune => {
+                // Per-range: $S75,{auto},{value},{dual_range_id}
+                cmd.push(auto);
+                cmd.push(value);
+                cmd.push(self.dual_range_id);
+                CommandId::Tune
             }
             ControlId::AntennaHeight => {
                 // Format: $S84,0,{meters},0

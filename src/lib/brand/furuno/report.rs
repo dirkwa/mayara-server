@@ -639,9 +639,37 @@ impl FurunoReportReceiver {
                 self.common.set_value(&ControlId::Doppler, value);
             }
 
-            CommandId::AliveCheck => {}
+            CommandId::Tune => {
+                // Response format: $N75,{auto},{value},{screen}
+                if numbers.len() >= 2 {
+                    let auto = numbers[0] as u8;
+                    let tune = numbers[1];
+                    self.common.set_value_auto(&ControlId::Tune, tune, auto);
+                }
+            }
+
+            // Silently handled (no state to update)
+            CommandId::AliveCheck
+            | CommandId::Heartbeat
+            | CommandId::NN3Command
+            | CommandId::CustomPictureAll
+            | CommandId::AntennaType
+            | CommandId::DispMode
+            | CommandId::PulseWidth
+            | CommandId::RingSuppression
+            | CommandId::TrailMode
+            | CommandId::TrailProcess
+            | CommandId::CustomATFSettings
+            | CommandId::ATFSettings
+            | CommandId::AutoAcquire => {}
+
             _ => {
-                bail!("TODO: Handle command {:?} values {:?}", command_id, numbers);
+                log::debug!(
+                    "{}: unhandled command {:?} values {:?}",
+                    self.common.key,
+                    command_id,
+                    numbers
+                );
             }
         }
         Ok(())

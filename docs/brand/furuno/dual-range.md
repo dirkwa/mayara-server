@@ -41,13 +41,13 @@ Each UDP frame has a 16-byte metadata header. Based on the TimeZero `RadarSweepM
 struct and the native DLL callback signature, each frame carries a `radarNo` field (0 or 1)
 that identifies which range the spokes belong to.
 
-In the native DLL, `radarNo` is delivered as a separate field in `RadarSweepMetadata`
-(struct order: angle, heading, headingFlag, **radarNo**, range, scale, sweepLength, status)
-and as the first parameter of the echo callback. The DLL must extract this from the raw UDP
-frame to populate it. In our `parse_metadata_header()`, `data[12]` is the wire_index (range)
-and `data[13]` is unexamined — this is the most likely position for the range identifier
-(radarNo), since it sits adjacent to the range field and would be 0 for all non-dual-range
-radars. A pcap capture from a DRS-NXT in dual range mode would confirm this.
+Disassembly of `DecodeImoEchoFormat` in the native `radar.dll` confirmed that the radar
+identifier is at **byte 11 bits 6-7** of the UDP frame header. This field was previously
+computed as `v3` in our parser but discarded. It is now extracted as `radar_no` and used
+for spoke demultiplexing. The radar.dll uses this value to index into per-radar sweep
+buffers at a stride of `0x104024` bytes, confirming it is the dual range identifier
+(0 = Range A, 1 = Range B). See `research/furuno/spoke-frame-header.md` for the complete
+16-byte header layout.
 
 ### Reports (TCP)
 
