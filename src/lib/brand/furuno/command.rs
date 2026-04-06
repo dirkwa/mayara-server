@@ -491,7 +491,7 @@ impl CommandSender for Command {
                 } else {
                     self.get_timed_idle_transmit()
                 };
-                let w_stop = self.get_timed_idle_standby();
+                let w_stop = (600 - w_send).max(60);
 
                 cmd.push(status);
                 cmd.push(0);
