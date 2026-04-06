@@ -275,6 +275,29 @@ impl Command {
         Ok(())
     }
 
+    fn get_timed_idle_enabled(&self) -> i32 {
+        self.controls
+            .get(&ControlId::TimedIdle)
+            .and_then(|c| c.value)
+            .map(|v| v as i32)
+            .unwrap_or(0)
+    }
+
+    fn get_timed_idle_transmit(&self) -> i32 {
+        self.controls
+            .get(&ControlId::TimedRun)
+            .and_then(|c| c.value)
+            .map(|v| v as i32)
+            .unwrap_or(60)
+    }
+
+    fn get_timed_idle_standby(&self) -> i32 {
+        // Standby period = 600 - transmit period (so total cycle stays at 10 minutes)
+        // Clamped to 60..600 range
+        let transmit = self.get_timed_idle_transmit();
+        (600 - transmit).max(60)
+    }
+
     fn get_zone_values(&self, control_id: &ControlId) -> (i32, i32, bool) {
         if let Some(control) = self.controls.get(control_id) {
             let start = control.value.map(|v| v as i32).unwrap_or(0);
@@ -418,12 +441,49 @@ impl CommandSender for Command {
                     _ => 1,
                 };
 
+                let wman = self.get_timed_idle_enabled();
+                let w_send = self.get_timed_idle_transmit();
+                let w_stop = self.get_timed_idle_standby();
+
                 cmd.push(value); // status
                 cmd.push(0);
-                cmd.push(0); // WatchMan on/off
-                cmd.push(60); // Watchman On time?
-                cmd.push(300); // Watchman Off time?
-                cmd.push(0); // Always 0
+                cmd.push(wman);
+                cmd.push(w_send);
+                cmd.push(w_stop);
+                cmd.push(0);
+
+                CommandId::Status
+            }
+
+            ControlId::TimedIdle | ControlId::TimedRun => {
+                // Resend the Status command with updated watchman settings.
+                // The radar uses the Status command for both power and watchman.
+                let power = self
+                    .controls
+                    .get(&ControlId::Power)
+                    .and_then(|c| c.value)
+                    .map(|v| v as i32)
+                    .unwrap_or(Power::Standby as i32);
+                let status = if power == Power::Transmit as i32 { 2 } else { 1 };
+
+                let wman = if cv.id == ControlId::TimedIdle {
+                    value // the new value being set
+                } else {
+                    self.get_timed_idle_enabled()
+                };
+                let w_send = if cv.id == ControlId::TimedRun {
+                    value
+                } else {
+                    self.get_timed_idle_transmit()
+                };
+                let w_stop = self.get_timed_idle_standby();
+
+                cmd.push(status);
+                cmd.push(0);
+                cmd.push(wman);
+                cmd.push(w_send);
+                cmd.push(w_stop);
+                cmd.push(0);
 
                 CommandId::Status
             }

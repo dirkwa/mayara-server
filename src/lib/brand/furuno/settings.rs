@@ -241,6 +241,14 @@ pub fn update_when_model_known(info: &mut RadarInfo, model: RadarModel, version:
         info.controls
             .add(new_list(ControlId::Doppler, doppler_options));
     }
+    if cap.watchman {
+        info.controls
+            .add(new_list(ControlId::TimedIdle, &["Off", "On"]));
+        info.controls.add(
+            new_numeric(ControlId::TimedRun, 10., 120.)
+                .wire_units(Units::Seconds),
+        );
+    }
     if cap.dual_range {
         info.dual_range = true;
     }

@@ -408,6 +408,7 @@ impl FurunoReportReceiver {
             }
 
             CommandId::Status => {
+                // Response format: $N69,{status},{wman},{?,{w_send},{w_stop},0
                 if numbers.len() < 1 {
                     bail!("No arguments for Status command");
                 }
@@ -418,9 +419,17 @@ impl FurunoReportReceiver {
                     3. => Power::Off,
                     _ => Power::Off,
                 };
-                // TODO check values with generic values [1 = Standby, 2 = Transmit but the others...]
                 self.common
                     .set_value(&ControlId::Power, generic_state as i32 as f64);
+
+                // Parse watchman (timed idle) state if present
+                if numbers.len() >= 5 {
+                    let wman = numbers[1] as i32;
+                    let w_send = numbers[3];
+                    self.common
+                        .set_value(&ControlId::TimedIdle, wman as f64);
+                    self.common.set_value(&ControlId::TimedRun, w_send);
+                }
             }
             CommandId::Gain => {
                 // Response format: $N63,{auto},{value},0,80,0

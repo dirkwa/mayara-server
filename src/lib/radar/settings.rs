@@ -112,8 +112,8 @@ pub enum ControlId {
     TrailsMotion,
     DopplerTrailsOnly,
     ClearTrails,
-    // TimedIdle,
-    // TimedRun,
+    TimedIdle,
+    TimedRun,
     DopplerSpeedThreshold,
     NoiseRejection,
     TargetBoost,
@@ -253,7 +253,9 @@ impl ControlId {
             | ControlId::SeaClutterCurve
             | ControlId::DisplayTiming
             | ControlId::SpokeProcessing
-            | ControlId::DopplerSpeedThreshold => Category::Advanced,
+            | ControlId::DopplerSpeedThreshold
+            | ControlId::TimedIdle
+            | ControlId::TimedRun => Category::Advanced,
         }
     }
 
@@ -334,6 +336,8 @@ impl ControlId {
                 "How long the spokes are that the radar transmitted last rotation"
             }
             ControlId::SpokeProcessing => "How to process spoke data for display",
+            ControlId::TimedIdle => "Periodically switch between transmit and standby",
+            ControlId::TimedRun => "How long the radar transmits during timed idle",
             ControlId::UserName => "User defined name for the radar",
         }
     }
@@ -405,7 +409,8 @@ impl ControlId {
             ControlId::TargetExpansion => "Target expansion",
             ControlId::TargetSeparation => "Target separation",
             ControlId::TargetTrails => "Target trails",
-            // ControlId::TimedIdle => "Time idle",
+            ControlId::TimedIdle => "Timed idle",
+            ControlId::TimedRun => "Timed idle transmit",
             // ControlId::TimedRun => "Timed run",
             ControlId::TrailsMotion => "Target trails motion",
             ControlId::Tune => "Tune",
@@ -483,6 +488,8 @@ impl ControlId {
             ControlId::Spokes => ControlDestination::ReadOnly,
             ControlId::SpokeLength => ControlDestination::ReadOnly,
             ControlId::SpokeProcessing => ControlDestination::Internal,
+            ControlId::TimedIdle => ControlDestination::Command,
+            ControlId::TimedRun => ControlDestination::Command,
             ControlId::RangeUnits => ControlDestination::Internal,
             ControlId::UserName => ControlDestination::Internal,
         }

@@ -27,6 +27,7 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 - Furuno per-model capability system: controls are now enabled based on the detected radar model
 - Furuno tuning control (auto/manual) for all models that support it
 - New Furuno command IDs: PulseWidth, Tune, TrailMode, RingSuppression, Heartbeat, NN3Command
+- Timed idle (watchman) controls for Furuno NXT radars: on/off toggle and transmit period
 
 ### Fixed
 
