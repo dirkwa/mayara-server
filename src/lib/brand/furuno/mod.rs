@@ -91,7 +91,7 @@ impl From<u8> for CommandMode {
 }
 
 #[allow(dead_code)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum RadarModel {
     Unknown,
     FAR21x7,

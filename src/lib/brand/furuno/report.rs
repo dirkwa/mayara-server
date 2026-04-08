@@ -41,6 +41,7 @@ struct FurunoSpokeMetadata {
     have_heading: u8,
     range: u32,
     radar_no: u8, // 0 = Range A, 1 = Range B (dual range)
+    wire_index: i32,
 }
 
 pub struct FurunoReportReceiver {
@@ -51,6 +52,10 @@ pub struct FurunoReportReceiver {
     command_sender: Option<Command>,
     report_request_interval: Duration,
     model_known: bool,
+    /// Detected radar model. Used to enable per-model spoke handling such as
+    /// the DRS4W-specific effective-sample-count-per-wire-index table, which
+    /// the NXT and DRS families do not need.
+    model: RadarModel,
 
     receive_type: ReceiveAddressType,
     multicast_socket: Option<UdpSocket>,
@@ -93,6 +98,7 @@ impl FurunoReportReceiver {
             command_sender,
             report_request_interval: Duration::from_millis(5000),
             model_known: false,
+            model: RadarModel::Unknown,
             receive_type: ReceiveAddressType::Both,
             multicast_socket: None,
             broadcast_socket: None,
@@ -785,6 +791,7 @@ impl FurunoReportReceiver {
                 model,
                 version
             );
+            self.model = model;
 
             settings::update_when_model_known(&mut self.common.info, model, version);
             if let Some(cs) = &mut self.command_sender {
@@ -995,19 +1002,26 @@ impl FurunoReportReceiver {
 
             sweep = &sweep[used..];
 
-            // The GUI buffers each angle in a slot of FURUNO_SPOKE_LEN samples and
-            // treats that whole slot as covering the spoke's reported physical range.
-            // Radars whose native sweep_len is smaller than FURUNO_SPOKE_LEN (e.g.
-            // DRS4W with sweep_len=430 vs FURUNO_SPOKE_LEN=883) would have their data
-            // confined to the inner sweep_len/FURUNO_SPOKE_LEN fraction of the screen,
-            // making targets appear much closer to own ship than they really are.
-            // Stretch shorter spokes to FURUNO_SPOKE_LEN by nearest-neighbour so that
-            // sample_i represents physical distance i/FURUNO_SPOKE_LEN * range.
-            let send_spoke: Vec<u8> = if generic_spoke.len() < FURUNO_SPOKE_LEN {
-                Self::stretch_spoke(&generic_spoke, FURUNO_SPOKE_LEN)
+            // The GUI buffers each angle in a slot of FURUNO_SPOKE_LEN samples
+            // and treats that whole slot as covering the spoke's reported
+            // physical range, so sample i is drawn at
+            // `i / FURUNO_SPOKE_LEN * metadata.range`.
+            //
+            // On the DRS4W every wire frame has 430 samples, but only the
+            // first N of them cover the configured display range — the radar
+            // changes pulse width per range scale and the tail of the buffer
+            // is beyond-pulse noise. See DRS4W_EFFECTIVE_SAMPLES and
+            // docs/brand/furuno/drs4w-distance.md for the empirical mapping.
+            //
+            // On all other Furuno models the native sweep_len already matches
+            // FURUNO_SPOKE_LEN, so the stretch is a no-op copy.
+            let src_effective = if self.model == RadarModel::DRS4W {
+                Self::drs4w_effective_samples(metadata.wire_index, generic_spoke.len())
             } else {
-                generic_spoke.clone()
+                generic_spoke.len()
             };
+            let send_spoke: Vec<u8> =
+                Self::stretch_spoke(&generic_spoke, src_effective, FURUNO_SPOKE_LEN);
 
             if is_range_b {
                 Self::add_spoke_to_common(
@@ -1142,27 +1156,69 @@ impl FurunoReportReceiver {
         (spoke, used)
     }
 
-    /// Stretch a decoded spoke from `src.len()` samples to `dst_len` samples
-    /// using nearest-neighbour interpolation. Used to upscale short native spokes
-    /// (e.g. DRS4W's 430) to the GUI's expected slot size (FURUNO_SPOKE_LEN=883),
-    /// so that sample i represents physical distance `i / dst_len * range`
-    /// regardless of the radar's native bin count. Without this, GUI buffers
-    /// would zero-fill the unused tail and confine real returns to the inner
-    /// `src.len() / dst_len` fraction of the screen.
-    fn stretch_spoke(src: &[u8], dst_len: usize) -> Vec<u8> {
+    /// Stretch a decoded spoke of `src_effective` meaningful samples (taken
+    /// from the front of `src`) to `dst_len` samples using nearest-neighbour
+    /// interpolation.
+    ///
+    /// On most Furuno models the native spoke length matches FURUNO_SPOKE_LEN
+    /// and `src_effective == src.len()` — the stretch becomes a no-op copy.
+    ///
+    /// The DRS4W is special: every spoke carries 430 samples on the wire, but
+    /// only the first N of those cover the configured display range (see
+    /// `docs/brand/furuno/drs4w-distance.md` for the reverse-engineering
+    /// details). N varies per wire_index because the radar changes pulse
+    /// width with range. Callers pass `src_effective = effective_samples(wi)`
+    /// for DRS4W and `src_effective = src.len()` otherwise, so sample `i` of
+    /// the output always represents physical distance
+    /// `i / dst_len * metadata.range`.
+    fn stretch_spoke(src: &[u8], src_effective: usize, dst_len: usize) -> Vec<u8> {
         if src.is_empty() || dst_len == 0 {
             return vec![0; dst_len];
         }
-        if src.len() >= dst_len {
+        let effective = src_effective.min(src.len()).max(1);
+        if effective >= dst_len {
             return src[..dst_len].to_vec();
         }
-        let src_len = src.len();
         let mut out = vec![0u8; dst_len];
         for i in 0..dst_len {
-            let j = (i * src_len) / dst_len;
+            let j = (i * effective) / dst_len;
             out[i] = src[j];
         }
         out
+    }
+
+    /// DRS4W effective-samples-per-wire-index, derived empirically from
+    /// live pcap `radar12.pcap` (2026-04-09). For each configured range
+    /// scale, only the first N samples of the 430-sample wire buffer carry
+    /// meaningful echo data; the rest is zero / beyond-pulse noise. Using
+    /// these values as the stretch source length instead of 430 removes
+    /// the remaining ~40% DRS4W under-plotting that the previous version
+    /// left behind.
+    ///
+    /// Values for wire indices with only a handful of spokes in the capture
+    /// (wi 3, 5, 7, 9) are linearly interpolated between neighbours;
+    /// they will be refined when a capture with more coverage is available.
+    /// See `docs/brand/furuno/drs4w-distance.md`.
+    const DRS4W_EFFECTIVE_SAMPLES: [(i32, usize); 11] = [
+        (0, 420), // 0.125 NM — measured: 420
+        (1, 422), // 0.25  NM — measured: 422
+        (2, 407), // 0.5   NM — measured: 407
+        (3, 357), // 0.75  NM — interpolated
+        (4, 308), // 1.0   NM — measured: 308
+        (5, 304), // 1.5   NM — interpolated
+        (6, 300), // 2.0   NM — measured: 300
+        (7, 245), // 3.0   NM — interpolated
+        (8, 191), // 4.0   NM — measured: 191
+        (9, 143), // 6.0   NM — interpolated
+        (10, 95), // 8.0   NM — measured: 95
+    ];
+
+    fn drs4w_effective_samples(wire_index: i32, fallback: usize) -> usize {
+        Self::DRS4W_EFFECTIVE_SAMPLES
+            .iter()
+            .find(|(idx, _)| *idx == wire_index)
+            .map(|(_, n)| *n)
+            .unwrap_or(fallback)
     }
 
     fn add_spoke_to_common(
@@ -1315,6 +1371,7 @@ impl FurunoReportReceiver {
             have_heading,
             range,
             radar_no,
+            wire_index,
         };
         log::trace!(
             "header {:?} -> sweep_count={} sweep_len={} encoding={} have_heading={} range={} radar_no={}",
