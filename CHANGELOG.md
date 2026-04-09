@@ -53,6 +53,8 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 - Furuno DRS4W: pad short spokes to sweep_len — compressed data on compact WiFi radars can produce fewer samples than expected (#48)
 - Furuno spoke distance rendering: use the `scale` field from the UDP frame header (bytes 14-15) as the effective sample count instead of `sweep_len`. The radar always transmits `sweep_len` total samples but only the first `scale` of them cover the configured display range — using `sweep_len` caused targets to render at `scale/sweep_len` (~56%) of their true radial distance on all Furuno models (#48)
 - Furuno DRS4W/DRS echo intensity: apply 2× software gain to compensate for the lower raw echo values produced by low-power magnetron antennas (max ~124 vs NXT's ~252), so the full color palette (blue→green→yellow→red) is utilised instead of only the lower half (#48)
+- Furuno Gain/Sea/Rain control definitions now preserve runtime state (value, auto) when updated at model-detection time
+- Furuno dual range: Range B ModelName is now vendor-accurate (the " B" suffix is only in UserName)
 - Furuno spoke header: heading_valid now correctly read from byte 11 bit 5 (was reading byte 15 bits 4-5)
 - Furuno spoke header: range wire index masked to 6 bits, angle/heading masked to 13 bits
 - Furuno frequent heartbeat ($NAF) and NN3 diagnostic ($NF5) messages no longer cause log noise
@@ -179,7 +181,7 @@ logged as github issues.
 
 ## Versions
 
-[Unreleased]: https://github.com/MarineYachtRadar/mayara-server/compare/v3.4.1..HEAD
+[Unreleased]: https://github.com/MarineYachtRadar/mayara-server/compare/v3.4.1...HEAD
 [3.4.1]: https://github.com/MarineYachtRadar/mayara-server/compare/v3.4.0...v3.4.1
 [3.4.0]: https://github.com/MarineYachtRadar/mayara-server/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/MarineYachtRadar/mayara-server/compare/v3.2.0...v3.3.0

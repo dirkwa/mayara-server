@@ -768,7 +768,9 @@ impl SharedControls {
         let (id, new_control) = control_builder.take();
         let mut locked = self.controls.write().unwrap();
         if let Some(existing) = locked.controls.get_mut(&id) {
+            let was_read_only = existing.item.is_read_only;
             existing.item = new_control.item;
+            existing.item.is_read_only |= was_read_only;
         } else {
             locked.controls.insert(id, new_control);
         }
