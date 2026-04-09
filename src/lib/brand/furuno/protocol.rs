@@ -322,6 +322,9 @@ pub enum CommandId {
     /// `0x6E` — Antenna type (read-only, 7 params).
     AntennaType = 0x6E,
 
+    /// `0x70` — Guard zone alarm status: `$N70,<count>,<status0>,<status1>`.
+    GuardStatus = 0x70,
+
     /// `0x75` — Tuning: `$S75,<auto>,<value>,<drid>`.
     Tune = 0x75,
     /// `0x76` — Tune indicator feedback (read-only).
@@ -358,6 +361,11 @@ pub enum CommandId {
 
     /// `0x96` — Firmware/model query.
     Modules = 0x96,
+    /// `0x98` — Guard zone mode: `$S98,<mode>,<param>,<zoneIndex>`.
+    GuardMode = 0x98,
+    /// `0x99` — Guard zone fan parameters:
+    /// `$S99,<zoneNo>,<startAngle>,<endAngle>,<innerRange>,<outerRange>`.
+    GuardFan = 0x99,
 
     /// `0x9E` — Drift.
     Drift = 0x9E,
@@ -602,3 +610,13 @@ pub const ECHO_GAIN_LOW_POWER: u8 = 2;
 
 /// Software echo gain for full-power radars (NXT, FAR).
 pub const ECHO_GAIN_DEFAULT: u8 = 1;
+
+// =============================================================================
+// Guard zone constants
+// =============================================================================
+
+/// Guard mode value: zone disabled.
+pub const GUARD_MODE_OFF: i32 = 0;
+
+/// Guard mode value: fan (sector) zone.
+pub const GUARD_MODE_FAN: i32 = 1;

@@ -1262,8 +1262,24 @@ impl CommonRadar {
                 // Handle ARPA/target tracking and exclusion zone controls directly
                 match cv.id {
                     ControlId::GuardZone1 | ControlId::GuardZone2 => {
-                        // Guard zones are already updated above, just persist and return
                         self.update();
+                        // Send to hardware if the brand supports it (e.g. Furuno)
+                        if let Some(command_sender) = command_sender {
+                            match command_sender
+                                .set_control(&cv, &self.info.controls)
+                                .await
+                            {
+                                Ok(()) => {}
+                                Err(RadarError::CannotSetControlId(_)) => {}
+                                Err(e) => {
+                                    log::warn!(
+                                        "{}: guard zone hardware sync failed: {}",
+                                        self.key,
+                                        e
+                                    );
+                                }
+                            }
+                        }
                         return Ok(());
                     }
                     ControlId::ArpaDetectMaxSpeed => {
