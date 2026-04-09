@@ -8,12 +8,15 @@ use crate::radar::settings::{ControlId, ControlValue, SharedControls};
 use crate::radar::{Power, RadarError, RadarInfo};
 
 use super::Model;
-
-pub const REQUEST_03_REPORT: [u8; 2] = [0x04, 0xc2]; // This causes the radar to report Report 3
-pub const REQUEST_MANY2_REPORT: [u8; 2] = [0x01, 0xc2]; // This causes the radar to report Report 02, 03, 04, 07 and 08
-pub const _REQUEST_04_REPORT: [u8; 2] = [0x02, 0xc2]; // This causes the radar to report Report 4
-pub const _REQUEST_02_08_REPORT: [u8; 2] = [0x03, 0xc2]; // This causes the radar to report Report 2 and Report 8
-const COMMAND_STAY_ON_A: [u8; 2] = [0xa0, 0xc1];
+use super::protocol::{
+    CATEGORY_CONTROL, CMD_ACCENT_LIGHT, CMD_BEARING_ALIGNMENT, CMD_DOPPLER,
+    CMD_DOPPLER_SPEED_THRESHOLD, CMD_GAIN_VARIANT, CMD_HALO_SEA, CMD_HALO_TARGET_EXPANSION,
+    CMD_INSTALLATION, CMD_INTERFERENCE_REJECTION, CMD_LOCAL_INTERFERENCE_REJECTION,
+    CMD_NOISE_REJECTION, CMD_NOTRANSMIT_ENABLE, CMD_NOTRANSMIT_SECTOR, CMD_POWER_ON, CMD_RANGE,
+    CMD_SCAN_SPEED, CMD_SEA_STATE, CMD_TARGET_BOOST, CMD_TARGET_EXPANSION, CMD_TARGET_SEPARATION,
+    CMD_TRANSMIT, CMD_USE_MODE, COMMAND_STAY_ON_A, INSTALL_TAG_ANTENNA_HEIGHT,
+    INSTALL_TAG_ANTENNA_OFFSET, REQUEST_STATE_BATCH, REQUEST_STATE_CONFIG,
+};
 
 pub struct Command {
     key: String,
@@ -112,10 +115,10 @@ impl Command {
             enabled
         );
 
-        cmd.extend_from_slice(&[0x0d, 0xc1, sector, 0, 0, 0, enabled]);
+        cmd.extend_from_slice(&[CMD_NOTRANSMIT_ENABLE, CATEGORY_CONTROL, sector, 0, 0, 0, enabled]);
         self.send(&cmd).await?;
         cmd.clear();
-        cmd.extend_from_slice(&[0xc0, 0xc1, sector, 0, 0, 0, enabled]);
+        cmd.extend_from_slice(&[CMD_NOTRANSMIT_SECTOR, CATEGORY_CONTROL, sector, 0, 0, 0, enabled]);
         cmd.extend_from_slice(&value_start.to_le_bytes());
         cmd.extend_from_slice(&value_end.to_le_bytes());
 
@@ -123,8 +126,8 @@ impl Command {
     }
 
     pub(super) async fn send_report_requests(&mut self) -> Result<(), RadarError> {
-        self.send(&REQUEST_03_REPORT).await?;
-        self.send(&REQUEST_MANY2_REPORT).await?;
+        self.send(&REQUEST_STATE_CONFIG).await?;
+        self.send(&REQUEST_STATE_BATCH).await?;
         self.send(&COMMAND_STAY_ON_A).await?;
         Ok(())
     }
@@ -167,30 +170,30 @@ impl CommandSender for Command {
                     _ => 0,
                 };
 
-                cmd.extend_from_slice(&[0x00, 0xc1, 0x01]);
+                cmd.extend_from_slice(&[CMD_POWER_ON, CATEGORY_CONTROL, 0x01]);
                 self.send(&cmd).await?;
                 cmd.clear();
-                cmd.extend_from_slice(&[0x01, 0xc1, value]);
+                cmd.extend_from_slice(&[CMD_TRANSMIT, CATEGORY_CONTROL, value]);
             }
 
             ControlId::Range => {
                 let decimeters: i32 = deci_value;
                 log::trace!("range {value} -> {decimeters}");
 
-                cmd.extend_from_slice(&[0x03, 0xc1]);
+                cmd.extend_from_slice(&[CMD_RANGE, CATEGORY_CONTROL]);
                 cmd.extend_from_slice(&decimeters.to_le_bytes());
             }
             ControlId::BearingAlignment => {
                 let value: i16 = Self::mod_deci_degrees(deci_value) as i16;
 
-                cmd.extend_from_slice(&[0x05, 0xc1]);
+                cmd.extend_from_slice(&[CMD_BEARING_ALIGNMENT, CATEGORY_CONTROL]);
                 cmd.extend_from_slice(&value.to_le_bytes());
             }
             ControlId::Gain => {
                 let v = Self::scale_100_to_byte(value);
                 let auto = auto as u32;
 
-                cmd.extend_from_slice(&[0x06, 0xc1, 0x00, 0x00, 0x00, 0x00]);
+                cmd.extend_from_slice(&[CMD_GAIN_VARIANT, CATEGORY_CONTROL, 0x00, 0x00, 0x00, 0x00]);
                 cmd.extend_from_slice(&auto.to_le_bytes());
                 cmd.extend_from_slice(&v.to_le_bytes());
             }
@@ -206,7 +209,7 @@ impl CommandSender for Command {
                     // Data: 11c100000001 = Mode manual
                     // Data: 11c101000001 = Mode auto
 
-                    cmd.extend_from_slice(&[0x11, 0xc1, auto]);
+                    cmd.extend_from_slice(&[CMD_HALO_SEA, CATEGORY_CONTROL, auto]);
                     if cv.value.is_none() && cv.auto_value.is_none() {
                         // Capture data:
                         // Data: 11c101000004 = Auto
@@ -228,35 +231,41 @@ impl CommandSender for Command {
                     let v: u32 = Self::scale_100_to_byte(value) as u32;
                     let auto = auto as u32;
 
-                    cmd.extend_from_slice(&[0x06, 0xc1, 0x02]);
+                    cmd.extend_from_slice(&[CMD_GAIN_VARIANT, CATEGORY_CONTROL, 0x02]);
                     cmd.extend_from_slice(&auto.to_be_bytes());
                     cmd.extend_from_slice(&v.to_be_bytes());
                 }
             }
             ControlId::Rain => {
                 let v = Self::scale_100_to_byte(value);
-                cmd.extend_from_slice(&[0x06, 0xc1, 0x04, 0, 0, 0, 0, 0, 0, 0, v]);
+                cmd.extend_from_slice(&[
+                    CMD_GAIN_VARIANT, CATEGORY_CONTROL, 0x04, 0, 0, 0, 0, 0, 0, 0, v,
+                ]);
             }
             ControlId::SideLobeSuppression => {
                 let v = Self::scale_100_to_byte(value);
 
-                cmd.extend_from_slice(&[0x06, 0xc1, 0x05, 0, 0, 0, auto, 0, 0, 0, v]);
+                cmd.extend_from_slice(&[
+                    CMD_GAIN_VARIANT, CATEGORY_CONTROL, 0x05, 0, 0, 0, auto, 0, 0, 0, v,
+                ]);
             }
             ControlId::InterferenceRejection => {
-                cmd.extend_from_slice(&[0x08, 0xc1, value as u8]);
+                cmd.extend_from_slice(&[CMD_INTERFERENCE_REJECTION, CATEGORY_CONTROL, value as u8]);
             }
             ControlId::TargetExpansion => {
                 if self.model == Model::HALO {
-                    cmd.extend_from_slice(&[0x12, 0xc1, value as u8]);
+                    cmd.extend_from_slice(&[
+                        CMD_HALO_TARGET_EXPANSION, CATEGORY_CONTROL, value as u8,
+                    ]);
                 } else {
-                    cmd.extend_from_slice(&[0x09, 0xc1, value as u8]);
+                    cmd.extend_from_slice(&[CMD_TARGET_EXPANSION, CATEGORY_CONTROL, value as u8]);
                 }
             }
             ControlId::TargetBoost => {
-                cmd.extend_from_slice(&[0x0a, 0xc1, value as u8]);
+                cmd.extend_from_slice(&[CMD_TARGET_BOOST, CATEGORY_CONTROL, value as u8]);
             }
             ControlId::SeaState => {
-                cmd.extend_from_slice(&[0x0b, 0xc1, value as u8]);
+                cmd.extend_from_slice(&[CMD_SEA_STATE, CATEGORY_CONTROL, value as u8]);
             }
             ControlId::NoTransmitSector1
             | ControlId::NoTransmitSector2
@@ -280,27 +289,29 @@ impl CommandSender for Command {
                     .await?;
             }
             ControlId::LocalInterferenceRejection => {
-                cmd.extend_from_slice(&[0x0e, 0xc1, value as u8]);
+                cmd.extend_from_slice(&[
+                    CMD_LOCAL_INTERFERENCE_REJECTION, CATEGORY_CONTROL, value as u8,
+                ]);
             }
             ControlId::ScanSpeed => {
-                cmd.extend_from_slice(&[0x0f, 0xc1, value as u8]);
+                cmd.extend_from_slice(&[CMD_SCAN_SPEED, CATEGORY_CONTROL, value as u8]);
             }
             ControlId::Mode => {
-                cmd.extend_from_slice(&[0x10, 0xc1, value as u8]);
+                cmd.extend_from_slice(&[CMD_USE_MODE, CATEGORY_CONTROL, value as u8]);
             }
             ControlId::NoiseRejection => {
-                cmd.extend_from_slice(&[0x21, 0xc1, value as u8]);
+                cmd.extend_from_slice(&[CMD_NOISE_REJECTION, CATEGORY_CONTROL, value as u8]);
             }
             ControlId::TargetSeparation => {
-                cmd.extend_from_slice(&[0x22, 0xc1, value as u8]);
+                cmd.extend_from_slice(&[CMD_TARGET_SEPARATION, CATEGORY_CONTROL, value as u8]);
             }
             ControlId::Doppler => {
-                cmd.extend_from_slice(&[0x23, 0xc1, value as u8]);
+                cmd.extend_from_slice(&[CMD_DOPPLER, CATEGORY_CONTROL, value as u8]);
             }
             ControlId::DopplerSpeedThreshold => {
                 let value = f64::round(value * 100.0) as u16;
                 let value = max(0, min(1594, value));
-                cmd.extend_from_slice(&[0x24, 0xc1]);
+                cmd.extend_from_slice(&[CMD_DOPPLER_SPEED_THRESHOLD, CATEGORY_CONTROL]);
                 cmd.extend_from_slice(&value.to_le_bytes());
             }
             ControlId::AntennaForward | ControlId::AntennaStarboard => {
@@ -311,18 +322,22 @@ impl CommandSender for Command {
                     let other = controls.get(&ControlId::AntennaForward).unwrap();
                     ((other.as_f64().unwrap_or(0.) * 1000.) as i32, (value * 1000.) as i32)
                 };
-                cmd.extend_from_slice(&[0x30, 0xc1, 0x04, 0, 0, 0]);
+                cmd.extend_from_slice(&[
+                    CMD_INSTALLATION, CATEGORY_CONTROL, INSTALL_TAG_ANTENNA_OFFSET, 0, 0, 0,
+                ]);
                 cmd.extend_from_slice(&ahead_mm.to_le_bytes());
                 cmd.extend_from_slice(&starboard_mm.to_le_bytes());
             }
             ControlId::AntennaHeight => {
                 let value = (value * 1000.) as u16;
-                cmd.extend_from_slice(&[0x30, 0xc1, 0x01, 0, 0, 0]);
+                cmd.extend_from_slice(&[
+                    CMD_INSTALLATION, CATEGORY_CONTROL, INSTALL_TAG_ANTENNA_HEIGHT, 0, 0, 0,
+                ]);
                 cmd.extend_from_slice(&value.to_le_bytes());
                 cmd.extend_from_slice(&[0, 0]);
             }
             ControlId::AccentLight => {
-                cmd.extend_from_slice(&[0x31, 0xc1, value as u8]);
+                cmd.extend_from_slice(&[CMD_ACCENT_LIGHT, CATEGORY_CONTROL, value as u8]);
             }
             // RangeUnits is a client-side display preference on Navico:
             // the radar always reports distances in meters and the unit

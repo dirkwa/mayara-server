@@ -1,5 +1,5 @@
 use num_derive::{FromPrimitive, ToPrimitive};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::{fmt, io};
 use strum::VariantNames;
 use tokio_graceful_shutdown::{SubsystemBuilder, SubsystemHandle};
@@ -16,58 +16,18 @@ use super::{LocatorId, RadarLocator};
 
 mod command;
 mod info;
+mod protocol;
 mod report;
 mod settings;
 
-const NAVICO_SPOKES: usize = 2048;
-
-// Length of a spoke in pixels. Every pixel is 4 bits (one nibble.)
-const NAVICO_SPOKE_LEN: usize = 1024;
-
-// Spoke numbers go from [0..4096>, but only half of them are used.
-// The actual image is 2048 x 1024 x 4 bits
-const NAVICO_SPOKES_RAW: u16 = 4096;
-const NAVICO_BITS_PER_PIXEL: usize = BITS_PER_NIBBLE;
-
-const SPOKES_PER_FRAME: usize = 32;
-const BITS_PER_BYTE: usize = 8;
-const BITS_PER_NIBBLE: usize = 4;
-const NAVICO_PIXELS_PER_BYTE: usize = BITS_PER_BYTE / NAVICO_BITS_PER_PIXEL;
-const RADAR_LINE_DATA_LENGTH: usize = NAVICO_SPOKE_LEN / NAVICO_PIXELS_PER_BYTE;
-
-const NAVICO_BEACON_ADDRESS: SocketAddr =
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(236, 6, 7, 5)), 6878);
-const NAVICO_INFO_ADDRESS: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(239, 238, 55, 73), 7527);
-const NAVICO_SPEED_ADDRESS_A: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 20), 6690);
-const NAVICO_SPEED_ADDRESS_B: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 15), 6005);
-
-/* NAVICO API SPOKES */
-/*
- * Data coming from radar is always 4 bits, packed two per byte.
- * The values 14 and 15 may be special depending on DopplerMode (only on HALO).
- *
- * To support targets, target trails and doppler we map those values 0..15 to
- * a
- */
-
-/*
-RADAR REPORTS
-
-The radars send various reports. The first 2 bytes indicate what the report type is.
-The types seen on a BR24 are:
-
-2nd byte C4:   01 02 03 04 05 07 08
-2nd byte F5:   08 0C 0D 0F 10 11 12 13 14
-
-Not definitive list for
-4G radars only send the C4 data.
-*/
-
-//
-const NAVICO_ADDRESS_REQUEST_PACKET: [u8; 2] = [0x01, 0xB1];
-
-const NAVICO_BR24_BEACON_ADDRESS: SocketAddr =
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(236, 6, 7, 4)), 6768);
+pub(super) use protocol::{
+    HALO_HEADING_INFO_ADDRESS, HALO_SPEED_ADDRESS_A, HALO_SPEED_ADDRESS_B, SPOKES_PER_FRAME,
+    SPOKES_PER_REVOLUTION, SPOKES_RAW, SPOKE_DATA_LENGTH, SPOKE_PIXEL_LEN,
+};
+use protocol::{
+    BR24_DISCOVERY_ADDRESS, COMMAND_SUBTYPE, DISCOVERY_QUERY_PACKET, GEN3PLUS_DISCOVERY_ADDRESS,
+    RADAR_SERVICE_TYPE, REPORT_SUBTYPE, SPOKE_DATA_SUBTYPE,
+};
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum Model {
@@ -136,16 +96,6 @@ const DYNAMIC_ALLOWED_CONTROLS: [ControlId; 5] = [
     ControlId::LocalInterferenceRejection,
     ControlId::ScanSpeed,
 ];
-
-
-// Service type and subtype identifiers for the Gen3+ beacon protocol.
-// Each device group has a service_type identifying its function, and contains
-// service entries with subtypes for data/command/report channels.
-// See research/navico/discovery-protocol.md.
-const RADAR_SERVICE_TYPE: u16 = 0x0010; // Device group: primary radar services
-const DATA_SUBTYPE: u16 = 0x0010; // Spoke/radar data (multicast RX)
-const COMMAND_SUBTYPE: u16 = 0x0011; // Control commands (multicast TX to radar)
-const REPORT_SUBTYPE: u16 = 0x0012; // State/reports (multicast RX from radar)
 
 #[derive(Debug, PartialEq)]
 struct RadarScanner {
@@ -216,7 +166,7 @@ fn parse_gen3plus_beacon(data: &[u8]) -> Option<Gen3PlusBeacon<'_>> {
                 let addr = SocketAddrV4::new(ip, port);
 
                 match subtype {
-                    DATA_SUBTYPE => data_addr = Some(addr),
+                    SPOKE_DATA_SUBTYPE => data_addr = Some(addr),
                     COMMAND_SUBTYPE => send_addr = Some(addr),
                     REPORT_SUBTYPE => report_addr = Some(addr),
                     _ => {}
@@ -270,7 +220,7 @@ impl NavicoLocator {
         );
         log::trace!("{}: printable:     {}", from, PrintableSlice::new(report));
 
-        if report == NAVICO_ADDRESS_REQUEST_PACKET {
+        if report == DISCOVERY_QUERY_PACKET {
             log::trace!("Radar address request packet from {}", from);
             return Ok(());
         }
@@ -349,8 +299,8 @@ impl NavicoLocator {
                 Some(beacon.serial_no),
                 suffix,
                 16,
-                NAVICO_SPOKES,
-                NAVICO_SPOKE_LEN,
+                SPOKES_PER_REVOLUTION,
+                SPOKE_PIXEL_LEN,
                 (*from).into(),
                 via.clone(),
                 scanner.data.into(),
@@ -426,11 +376,11 @@ pub(super) fn new(args: &Cli, addresses: &mut Vec<LocatorAddress>) {
     if !addresses.iter().any(|i| i.id == LocatorId::Gen3Plus) {
         let mut beacon_request_packets: Vec<&'static [u8]> = Vec::new();
         if !args.replay {
-            beacon_request_packets.push(&NAVICO_ADDRESS_REQUEST_PACKET);
+            beacon_request_packets.push(&DISCOVERY_QUERY_PACKET);
         };
         addresses.push(LocatorAddress::new(
             LocatorId::Gen3Plus,
-            &NAVICO_BEACON_ADDRESS,
+            &GEN3PLUS_DISCOVERY_ADDRESS,
             Brand::Navico,
             beacon_request_packets,
             Box::new(NavicoLocator { args: args.clone() }),
@@ -440,11 +390,11 @@ pub(super) fn new(args: &Cli, addresses: &mut Vec<LocatorAddress>) {
     if !addresses.iter().any(|i| i.id == LocatorId::GenBR24) {
         let mut beacon_request_packets: Vec<&'static [u8]> = Vec::new();
         if !args.replay {
-            beacon_request_packets.push(&NAVICO_ADDRESS_REQUEST_PACKET);
+            beacon_request_packets.push(&DISCOVERY_QUERY_PACKET);
         };
         addresses.push(LocatorAddress::new(
             LocatorId::GenBR24,
-            &NAVICO_BR24_BEACON_ADDRESS,
+            &BR24_DISCOVERY_ADDRESS,
             Brand::Navico,
             beacon_request_packets,
             Box::new(NavicoLocator { args: args.clone() }),

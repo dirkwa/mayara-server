@@ -14,8 +14,12 @@ use tokio_graceful_shutdown::SubsystemHandle;
 
 use super::Model;
 use super::command::Command;
+use super::protocol::{
+    STATE_CONFIG, STATE_FEATURES, STATE_INSTALLATION, STATE_MODE, STATE_PROPERTIES, STATE_SETUP,
+    VALID_SPOKE_STATUSES,
+};
 use super::{
-    DYNAMIC_ALLOWED_CONTROLS, NAVICO_SPOKES_RAW, RADAR_LINE_DATA_LENGTH, SPOKES_PER_FRAME,
+    DYNAMIC_ALLOWED_CONTROLS, SPOKES_PER_FRAME, SPOKES_RAW, SPOKE_DATA_LENGTH, SPOKE_PIXEL_LEN,
 };
 
 use crate::Cli;
@@ -23,9 +27,7 @@ use crate::brand::CommandSender;
 use crate::brand::navico::info::{
     HaloHeadingPacket, HaloNavigationPacket, HaloSpeedPacket, Information,
 };
-use crate::brand::navico::{
-    HaloMode, NAVICO_INFO_ADDRESS, NAVICO_SPEED_ADDRESS_A, NAVICO_SPOKE_LEN,
-};
+use crate::brand::navico::{HALO_HEADING_INFO_ADDRESS, HALO_SPEED_ADDRESS_A, HaloMode};
 use crate::network::create_udp_multicast_listen;
 use crate::radar::range::{RangeDetection, RangeDetectionResult};
 use crate::radar::settings::{ControlId, ControlValue};
@@ -48,7 +50,7 @@ use crate::util::{c_string, c_wide_string};
  Known values for heading value:
 */
 const HEADING_TRUE_FLAG: u16 = 0x4000;
-const HEADING_MASK: u16 = NAVICO_SPOKES_RAW - 1;
+const HEADING_MASK: u16 = SPOKES_RAW - 1;
 fn is_heading_true(x: u16) -> bool {
     (x & HEADING_TRUE_FLAG) != 0
 }
@@ -97,7 +99,7 @@ struct Gen3PlusHeader {
 #[repr(packed)]
 struct RadarLine {
     _header: Gen3PlusHeader, // or GenBr24Header
-    _data: [u8; RADAR_LINE_DATA_LENGTH],
+    _data: [u8; SPOKE_DATA_LENGTH],
 }
 
 #[repr(packed)]
@@ -114,11 +116,6 @@ struct RadarFramePkt {
 const FRAME_HEADER_LENGTH: usize = size_of::<FrameHeader>();
 const RADAR_LINE_HEADER_LENGTH: usize = size_of::<Gen3PlusHeader>();
 
-// Spoke status values observed across Navico radar models.
-// 0x02: valid spoke data (documented in Dabrowski et al. 2011 BR24 paper)
-// 0x12: valid spoke data (observed on 4G+, meaning of upper bits unknown)
-// 0xC2: valid spoke data (observed on HALO20+, meaning of upper bits unknown)
-const KNOWN_SPOKE_STATUSES: [u8; 3] = [0x02, 0x12, 0xC2];
 const RADAR_LINE_LENGTH: usize = size_of::<RadarLine>();
 
 // The LookupSpokeEnum is an index into an array, really
@@ -235,8 +232,6 @@ impl StateMode {
     }
 }
 
-const STATE_MODE: u8 = 0x01;
-
 #[derive(Debug)]
 #[repr(packed)]
 struct StateSetup {
@@ -273,8 +268,6 @@ impl StateSetup {
     }
 }
 
-const STATE_SETUP: u8 = 0x02;
-
 #[derive(Debug)]
 #[repr(packed)]
 struct StateConfig {
@@ -299,8 +292,6 @@ impl StateConfig {
         })
     }
 }
-
-const STATE_CONFIG: u8 = 0x03;
 
 // StateFeatures uses fixed offsets for BR24/4G/HALO radars observed in captures.
 // Note: SRX firmware (2023+) uses tPackedDataParser TLV encoding for this opcode,
@@ -333,8 +324,6 @@ impl StateFeatures {
         })
     }
 }
-
-const STATE_FEATURES: u8 = 0x04;
 
 #[derive(Debug, Copy, Clone)]
 #[repr(packed)]
@@ -394,8 +383,6 @@ impl StateProperties74 {
         })
     }
 }
-
-const STATE_PROPERTIES: u8 = 0x06;
 
 #[derive(Debug, Copy, Clone)]
 #[repr(packed)]
@@ -469,8 +456,6 @@ impl StateInstallation32 {
         })
     }
 }
-
-const STATE_INSTALLATION: u8 = 0x08;
 
 impl NavicoReportReceiver {
     pub fn new(
@@ -587,7 +572,7 @@ impl NavicoReportReceiver {
         if self.info_socket.is_some() {
             return Ok(()); // Already started
         }
-        match create_udp_multicast_listen(&NAVICO_INFO_ADDRESS, &self.common.info.nic_addr) {
+        match create_udp_multicast_listen(&HALO_HEADING_INFO_ADDRESS, &self.common.info.nic_addr) {
             Ok(socket) => {
                 self.info_socket = Some(socket);
                 log::debug!(
@@ -615,7 +600,7 @@ impl NavicoReportReceiver {
         if self.speed_socket.is_some() {
             return Ok(()); // Already started
         }
-        match create_udp_multicast_listen(&NAVICO_SPEED_ADDRESS_A, &self.common.info.nic_addr) {
+        match create_udp_multicast_listen(&HALO_SPEED_ADDRESS_A, &self.common.info.nic_addr) {
             Ok(socket) => {
                 self.speed_socket = Some(socket);
                 log::debug!(
@@ -802,7 +787,7 @@ impl NavicoReportReceiver {
         for scanline in 0..spokes_in_frame {
             let header_slice = &self.data_buf[offset..offset + RADAR_LINE_HEADER_LENGTH];
             let spoke_slice = &self.data_buf[offset + RADAR_LINE_HEADER_LENGTH
-                ..offset + RADAR_LINE_HEADER_LENGTH + RADAR_LINE_DATA_LENGTH];
+                ..offset + RADAR_LINE_HEADER_LENGTH + SPOKE_DATA_LENGTH];
 
             if let Some((range, angle, heading)) = self.validate_header(header_slice, scanline) {
                 log::trace!("range {} angle {} heading {:?}", range, angle, heading);
@@ -827,7 +812,7 @@ impl NavicoReportReceiver {
         let pixel_to_blob = &self.pixel_to_blob;
 
         // Convert the spoke data to bytes
-        let mut generic_spoke: Vec<u8> = Vec::with_capacity(NAVICO_SPOKE_LEN);
+        let mut generic_spoke: Vec<u8> = Vec::with_capacity(SPOKE_PIXEL_LEN);
         let low_nibble_index = (match self.doppler {
             DopplerMode::None => LookupDoppler::LowNormal,
             DopplerMode::Both => LookupDoppler::LowBoth,
@@ -1501,7 +1486,7 @@ impl NavicoReportReceiver {
             );
             return None;
         }
-        if !KNOWN_SPOKE_STATUSES.contains(&header.status) {
+        if !VALID_SPOKE_STATUSES.contains(&header.status) {
             log::warn!("Spoke with unknown or invalid status (0x{:x}) ignored", header.status);
             return None;
         }
@@ -1533,7 +1518,7 @@ impl NavicoReportReceiver {
             );
             return None;
         }
-        if !KNOWN_SPOKE_STATUSES.contains(&header.status) {
+        if !VALID_SPOKE_STATUSES.contains(&header.status) {
             log::warn!("Spoke with unknown or invalid status (0x{:x}) ignored", header.status);
             return None;
         }

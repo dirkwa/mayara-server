@@ -2,7 +2,9 @@ use std::mem::transmute;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use tokio::net::UdpSocket;
 
-use crate::brand::navico::{NAVICO_INFO_ADDRESS, NAVICO_SPEED_ADDRESS_A, NAVICO_SPEED_ADDRESS_B};
+use crate::brand::navico::{
+    HALO_HEADING_INFO_ADDRESS, HALO_SPEED_ADDRESS_A, HALO_SPEED_ADDRESS_B,
+};
 use crate::navdata::{get_cog, get_heading_true, get_sog};
 use crate::network::create_multicast_send;
 use crate::radar::{RadarError, RadarInfo};
@@ -93,9 +95,9 @@ enum SocketIndex {
 }
 
 const SOCKET_ADDRESS: [SocketAddrV4; 3] = [
-    NAVICO_INFO_ADDRESS,
-    NAVICO_SPEED_ADDRESS_A,
-    NAVICO_SPEED_ADDRESS_B,
+    HALO_HEADING_INFO_ADDRESS,
+    HALO_SPEED_ADDRESS_A,
+    HALO_SPEED_ADDRESS_B,
 ];
 
 pub(crate) struct Information {
