@@ -8,10 +8,6 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 
 ## [Unreleased]
 
-### Fixed
-
-- Target tracker pegged one CPU core on noisy radar feeds: the blob detector now uses a single detector-wide `(spoke, pixel) -> blob id` spatial index, so adjacency and contour lookups are O(1) in both blob size and number of active blobs instead of scanning every active blob for every strong pixel
-
 ### Changed
 
 - Emulator loops continuously: boat and targets reverse course when targets leave radar range, then turn back at the starting position (closes #38)
@@ -35,6 +31,9 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 
 ### Fixed
 
+- Target tracker pegged one CPU core on noisy feeds: the blob detector now uses a single detector-wide `(spoke, pixel) -> blob id` spatial index, so adjacency and contour lookups are O(1) in both blob size and number of active blobs
+- Furuno DRS4D-NXT: raised FURUNO_SPOKE_LEN from 883 to 1024 — the DRS4D-NXT reports sweep_len=884, so each spoke's last sample overflowed into the next angle's slot and produced a slowly rotating ring/moiré pattern on the PPI
+- Furuno DRS4D-NXT: Reduce processor calibration now counts unique angles — the radar sends each angle twice in consecutive sweeps, so the old count was roughly 2× the true unique-angle count and left every other reduced-buffer slot empty, producing tangential striping across rendered targets
 - Furuno dual range: Route TCP report responses (Status, Gain, Sea, Rain, Tune) to the correct range (A or B) based on dual_range_id in the response
 - Furuno dual range: correct drid field positions for all per-range commands (Status, Gain, Sea, Rain) — verified against live Wireshark captures
 - Furuno dual range: Range response now correctly reads unit from field 1 (was field 2, which is actually drid)
@@ -42,7 +41,7 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 - Furuno dual range: Range B spoke interleaving is no longer auto-activated at init; it starts after the first explicit Range B range command sent by the client
 - Furuno tune control max increased from 100 to 2000 to accommodate raw radar values
 - Furuno DRS4W: pad short spokes to sweep_len — compressed data on compact WiFi radars can produce fewer samples than expected (#48)
-- Furuno DRS4W: stretch short native spokes (430 samples) to FURUNO_SPOKE_LEN (883) so that targets render at their correct radial distance instead of being squashed into the inner ~49% of the screen (#48)
+- Furuno DRS4W: stretch short native spokes (430 samples) to FURUNO_SPOKE_LEN (1024) so that targets render at their correct radial distance instead of being squashed into the inner fraction of the screen (#48)
 - Furuno spoke header: heading_valid now correctly read from byte 11 bit 5 (was reading byte 15 bits 4-5)
 - Furuno spoke header: range wire index masked to 6 bits, angle/heading masked to 13 bits
 - Furuno frequent heartbeat ($NAF) and NN3 diagnostic ($NF5) messages no longer cause log noise
