@@ -24,10 +24,8 @@ use super::{
 
 use crate::Cli;
 use crate::brand::CommandSender;
-use crate::brand::navico::info::{
-    HaloHeadingPacket, HaloNavigationPacket, HaloSpeedPacket, Information,
-};
-use crate::brand::navico::{HALO_HEADING_INFO_ADDRESS, HALO_SPEED_ADDRESS_A, HaloMode};
+use crate::brand::navico::info::{HaloHeadingPacket, HaloNavigationPacket, Information};
+use crate::brand::navico::{HALO_HEADING_INFO_ADDRESS, HaloMode};
 use crate::network::create_udp_multicast_listen;
 use crate::radar::range::{RangeDetection, RangeDetectionResult};
 use crate::radar::settings::{ControlId, ControlValue};
@@ -180,8 +178,6 @@ pub struct NavicoReportReceiver {
     report_socket: Option<UdpSocket>,
     info_buf: Vec<u8>,
     info_socket: Option<UdpSocket>,
-    speed_buf: Vec<u8>,
-    speed_socket: Option<UdpSocket>,
     model: Model,
     command_sender: Option<Command>,
     info_sender: Option<Information>,
@@ -203,8 +199,10 @@ const REPORT_REQUEST_INTERVAL: Duration = Duration::from_millis(5000);
 // When others send INFO reports, we do not want to send our own INFO reports
 const INFO_BY_OTHERS_TIMEOUT: Duration = Duration::from_secs(15);
 
-// When we send INFO reports, the interval is short
-const INFO_BY_US_INTERVAL: Duration = Duration::from_millis(250);
+// Send heading and navigation packets at ~10 Hz to match what real Navico
+// MFDs do. Each call to send_info_packets() sends both a heading and a
+// navigation packet, so the per-packet rate seen on the wire is ~20 Hz.
+const INFO_BY_US_INTERVAL: Duration = Duration::from_millis(100);
 
 // When we are detecting ranges, we wait for 2 seconds before we send the next range
 const RANGE_DETECTION_INTERVAL: Duration = Duration::from_secs(2);
@@ -511,8 +509,6 @@ impl NavicoReportReceiver {
             report_socket: None,
             info_buf: Vec::with_capacity(::core::mem::size_of::<HaloHeadingPacket>()),
             info_socket: None,
-            speed_buf: Vec::with_capacity(::core::mem::size_of::<HaloSpeedPacket>()),
-            speed_socket: None,
             model,
             command_sender,
             info_sender,
@@ -596,34 +592,6 @@ impl NavicoReportReceiver {
         }
     }
 
-    fn start_speed_socket(&mut self) -> io::Result<()> {
-        if self.speed_socket.is_some() {
-            return Ok(()); // Already started
-        }
-        match create_udp_multicast_listen(&HALO_SPEED_ADDRESS_A, &self.common.info.nic_addr) {
-            Ok(socket) => {
-                self.speed_socket = Some(socket);
-                log::debug!(
-                    "{}: {} via {}: listening for speed reports",
-                    self.common.key,
-                    &self.common.info.report_addr,
-                    &self.common.info.nic_addr
-                );
-                Ok(())
-            }
-            Err(e) => {
-                log::debug!(
-                    "{}: {} via {}: create multicast failed: {}",
-                    self.common.key,
-                    &self.common.info.report_addr,
-                    &self.common.info.nic_addr,
-                    e
-                );
-                Err(e)
-            }
-        }
-    }
-
     fn start_data_socket(&mut self) -> io::Result<()> {
         if self.data_socket.is_some() {
             return Ok(()); // Already started
@@ -663,7 +631,6 @@ impl NavicoReportReceiver {
         loop {
             if !self.common.replay {
                 self.start_info_socket()?;
-                self.start_speed_socket()?;
             }
             self.start_data_socket()?;
 
@@ -716,19 +683,6 @@ impl NavicoReportReceiver {
                         }
                         Err(e) => {
                             log::error!("{}: receive info error: {}", self.common.key, e);
-                            return Err(RadarError::Io(e));
-                        }
-                    }
-                },
-
-                Some(r) = Self::conditional_receive(&self.speed_socket, &mut self.speed_buf) => {
-                    match r {
-                        Ok((_len, addr)) => {
-                            self.process_speed(&addr);
-                            self.speed_buf.clear();
-                        }
-                        Err(e) => {
-                            log::error!("{}: receive speed error: {}", self.common.key, e);
                             return Err(RadarError::Io(e));
                         }
                     }
@@ -965,16 +919,6 @@ impl NavicoReportReceiver {
                             log::trace!("{}: Halo heading report {:?}", self.common.key, report);
                         }
                     }
-                }
-            }
-        }
-    }
-
-    fn process_speed(&mut self, addr: &SocketAddr) {
-        if let SocketAddr::V4(addr) = addr {
-            if addr.ip() != &self.common.info.nic_addr {
-                if let Ok(report) = HaloSpeedPacket::transmute(&self.speed_buf) {
-                    log::trace!("{}: Halo speed report {:?}", self.common.key, report);
                 }
             }
         }

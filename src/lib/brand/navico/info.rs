@@ -1,10 +1,8 @@
 use std::mem::transmute;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::Ipv4Addr;
 use tokio::net::UdpSocket;
 
-use crate::brand::navico::{
-    HALO_HEADING_INFO_ADDRESS, HALO_SPEED_ADDRESS_A, HALO_SPEED_ADDRESS_B,
-};
+use crate::brand::navico::HALO_HEADING_INFO_ADDRESS;
 use crate::navdata::{get_cog, get_heading_true, get_sog};
 use crate::network::create_multicast_send;
 use crate::radar::{RadarError, RadarInfo};
@@ -65,45 +63,10 @@ impl HaloNavigationPacket {
     }
 }
 
-#[derive(Debug)]
-#[repr(packed)]
-#[allow(dead_code)]
-pub(crate) struct HaloSpeedPacket {
-    marker: [u8; 6],  // 6 bytes containing '01 d3 01 00 00 00'
-    pub sog: [u8; 2], // Speed m/s
-    u00: [u8; 6],     // 6 bytes containing '00 00 01 00 00 00'
-    pub cog: [u8; 2], // COG
-    u01: [u8; 7],     // 6 bytes containing '00 00 01 33 00 00 00'
-}
-
-impl HaloSpeedPacket {
-    pub fn transmute(bytes: &[u8]) -> Result<Self, anyhow::Error> {
-        // This is safe as the struct's bits are always all valid representations,
-        // or we convert them using a fail safe function
-        Ok(unsafe {
-            let report: [u8; 23] = bytes.try_into()?;
-            transmute(report)
-        })
-    }
-}
-
-// This enum is an index into the SOCKET_ADDRESS array
-enum SocketIndex {
-    HeadingAndNavigation,
-    SpeedA,
-    SpeedB,
-}
-
-const SOCKET_ADDRESS: [SocketAddrV4; 3] = [
-    HALO_HEADING_INFO_ADDRESS,
-    HALO_SPEED_ADDRESS_A,
-    HALO_SPEED_ADDRESS_B,
-];
-
 pub(crate) struct Information {
     key: String,
     nic_addr: Ipv4Addr,
-    sock: [Option<UdpSocket>; 3], // Heading/Navigation, Speed A, Speed B
+    sock: Option<UdpSocket>,
     counter: u16,
 }
 
@@ -118,24 +81,24 @@ impl Information {
         Information {
             key,
             nic_addr: info.nic_addr.clone(),
-            sock: [None, None, None], // Heading/Navigation and Speed A/B
+            sock: None,
             counter: 0,
         }
     }
 
-    async fn start_socket(&mut self, index: usize) -> Result<(), RadarError> {
-        if self.sock[index].is_some() {
+    async fn start_socket(&mut self) -> Result<(), RadarError> {
+        if self.sock.is_some() {
             return Ok(());
         }
-        match create_multicast_send(&SOCKET_ADDRESS[index], &self.nic_addr) {
+        match create_multicast_send(&HALO_HEADING_INFO_ADDRESS, &self.nic_addr) {
             Ok(sock) => {
                 log::debug!(
                     "{} {} via {}: sending info",
                     self.key,
-                    &SOCKET_ADDRESS[index],
+                    &HALO_HEADING_INFO_ADDRESS,
                     &self.nic_addr
                 );
-                self.sock[index] = Some(sock);
+                self.sock = Some(sock);
 
                 Ok(())
             }
@@ -143,7 +106,7 @@ impl Information {
                 log::debug!(
                     "{} {} via {}: create multicast failed: {}",
                     self.key,
-                    &SOCKET_ADDRESS[index],
+                    &HALO_HEADING_INFO_ADDRESS,
                     &self.nic_addr,
                     e
                 );
@@ -152,10 +115,10 @@ impl Information {
         }
     }
 
-    pub async fn send(&mut self, index: usize, message: &[u8]) -> Result<(), RadarError> {
-        self.start_socket(index).await?;
+    pub async fn send(&mut self, message: &[u8]) -> Result<(), RadarError> {
+        self.start_socket().await?;
 
-        if let Some(sock) = &self.sock[index] {
+        if let Some(sock) = &self.sock {
             sock.send(message).await.map_err(RadarError::Io)?;
             log::trace!("{}: sent {:02X?}", self.key, message);
         }
@@ -171,22 +134,21 @@ impl Information {
                 marker: [b'N', b'K', b'O', b'E'],
                 preamble: [0, 1, 0x90, 0x02],
                 counter: self.counter.to_be_bytes(),
-                u01: [0; 26], // 25 bytes of unknown data
+                u01: [0; 26],
                 u02: [0x12, 0xf1, 0x01, 0x00],
                 now,
-                u03: [0, 0, 0, 2, 0, 0, 0, 0], // 8 bytes of unknown data
-                u04: [0; 4],                   // 4 bytes of unknown data
-                u05: [0; 4],                   // 4 bytes of unknown data
-                u06: [0xff],                   // 1 byte, could be a counter or 0xff
-                heading: heading.to_le_bytes(), // 2 bytes for heading
-                u07: [0; 5],                   // 5 bytes of unknown data
+                u03: [0x02, 0, 0, 0, 0, 0, 0, 0],
+                u04: [0; 4],
+                u05: [0; 4],
+                u06: [0xff],
+                heading: heading.to_le_bytes(),
+                u07: [0; 5],
             };
 
             let bytes: &[u8] = any_as_u8_slice(&heading_packet);
             self.counter = self.counter.wrapping_add(1);
 
-            self.send(SocketIndex::HeadingAndNavigation as usize, bytes)
-                .await?;
+            self.send(bytes).await?;
         }
         Ok(())
     }
@@ -196,44 +158,23 @@ impl Information {
             let sog = (sog * 10.0) as i16;
             let cog = (cog * (63488.0 / 360.0)) as i16;
             let now = chrono::Utc::now().timestamp_millis().to_le_bytes();
-            let heading_packet = HaloNavigationPacket {
+            let nav_packet = HaloNavigationPacket {
                 marker: [b'N', b'K', b'O', b'E'],
                 preamble: [0, 1, 0x90, 0x02],
                 counter: self.counter.to_be_bytes(),
-                u01: [0; 26], // 25 bytes of unknown data
+                u01: [0; 26],
                 u02: [0x02, 0xf8, 0x01, 0x00],
                 now,
-                u03: [0; 18],           // 8 bytes of unknown data
-                cog: cog.to_le_bytes(), // 2 bytes for COG
-                sog: sog.to_le_bytes(), // 2 bytes for SOG
-                u04: [0xff, 0xff],      // 5 bytes of unknown data
+                u03: [0; 18],
+                cog: cog.to_le_bytes(),
+                sog: sog.to_le_bytes(),
+                u04: [0xff, 0xff],
             };
 
-            let bytes: &[u8] = any_as_u8_slice(&heading_packet);
+            let bytes: &[u8] = any_as_u8_slice(&nav_packet);
             self.counter = self.counter.wrapping_add(1);
 
-            self.send(SocketIndex::HeadingAndNavigation as usize, bytes)
-                .await?;
-        }
-        Ok(())
-    }
-
-    async fn send_speed_packet(&mut self) -> Result<(), RadarError> {
-        if let (Some(sog), Some(cog)) = (get_sog(), get_cog()) {
-            let sog = (sog * 10.0) as u16;
-            let cog = (cog * 63488.0 / 360.0) as u16;
-            let speed_packet = HaloSpeedPacket {
-                marker: [0x01, 0xd3, 0x01, 0x00, 0x00, 0x00],
-                sog: sog.to_le_bytes(),
-                u00: [0x00, 0x00, 0x01, 0x00, 0x00, 0x00], // 6 bytes of unknown data
-                cog: cog.to_le_bytes(),
-                u01: [0x00, 0x00, 0x01, 0x33, 0x00, 0x00, 0x00],
-            };
-
-            let bytes: &[u8] = any_as_u8_slice(&speed_packet);
-
-            self.send(SocketIndex::SpeedA as usize, bytes).await?;
-            self.send(SocketIndex::SpeedB as usize, bytes).await?;
+            self.send(bytes).await?;
         }
         Ok(())
     }
@@ -241,7 +182,6 @@ impl Information {
     pub(super) async fn send_info_packets(&mut self) -> Result<(), RadarError> {
         self.send_heading_packet().await?;
         self.send_navigation_packet().await?;
-        self.send_speed_packet().await?;
         Ok(())
     }
 }
