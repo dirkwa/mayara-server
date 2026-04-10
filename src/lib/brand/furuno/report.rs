@@ -775,25 +775,24 @@ impl FurunoReportReceiver {
 
             CommandId::GuardStatus => {
                 // $N70,<count>,<status0>,<status1> — log on state change only
-                let alarms = [
-                    numbers.get(1).copied().unwrap_or(0.0) as i32 != 0,
-                    numbers.get(2).copied().unwrap_or(0.0) as i32 != 0,
-                ];
-                for (i, &active) in alarms.iter().enumerate() {
-                    if active != self.guard_zone_alarm[i] {
-                        self.guard_zone_alarm[i] = active;
-                        if active {
-                            log::warn!(
-                                "{}: Guard zone {} alarm ACTIVE",
-                                self.common.key,
-                                i + 1
-                            );
-                        } else {
-                            log::info!(
-                                "{}: Guard zone {} alarm cleared",
-                                self.common.key,
-                                i + 1
-                            );
+                if numbers.len() >= 3 {
+                    let alarms = [numbers[1] as i32 != 0, numbers[2] as i32 != 0];
+                    for (i, &active) in alarms.iter().enumerate() {
+                        if active != self.guard_zone_alarm[i] {
+                            self.guard_zone_alarm[i] = active;
+                            if active {
+                                log::warn!(
+                                    "{}: Guard zone {} alarm ACTIVE",
+                                    self.common.key,
+                                    i + 1
+                                );
+                            } else {
+                                log::info!(
+                                    "{}: Guard zone {} alarm cleared",
+                                    self.common.key,
+                                    i + 1
+                                );
+                            }
                         }
                     }
                 }
