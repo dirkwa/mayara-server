@@ -4,6 +4,10 @@ on:
   push:
     branches: [ "main" ]
 
+concurrency:
+  group: changelog-main
+  cancel-in-progress: true
+
 jobs:
   changelog:
     name: Update Changelog
