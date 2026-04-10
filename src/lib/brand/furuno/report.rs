@@ -74,6 +74,7 @@ pub struct FurunoReportReceiver {
     // delta-decoded spoke after every switch.
     prev_spoke: [Vec<u8>; 2],
     prev_angle: [u16; 2],
+    guard_zone_alarm: [bool; 2],
 }
 
 impl FurunoReportReceiver {
@@ -111,6 +112,7 @@ impl FurunoReportReceiver {
             broadcast_socket: None,
             prev_spoke: [Vec::new(), Vec::new()],
             prev_angle: [0, 0],
+            guard_zone_alarm: [false, false],
         }
     }
 
@@ -771,6 +773,31 @@ impl FurunoReportReceiver {
                 }
             }
 
+            CommandId::GuardStatus => {
+                // $N70,<count>,<status0>,<status1> — log on state change only
+                if numbers.len() >= 3 {
+                    let alarms = [numbers[1] as i32 != 0, numbers[2] as i32 != 0];
+                    for (i, &active) in alarms.iter().enumerate() {
+                        if active != self.guard_zone_alarm[i] {
+                            self.guard_zone_alarm[i] = active;
+                            if active {
+                                log::warn!(
+                                    "{}: Guard zone {} alarm ACTIVE",
+                                    self.common.key,
+                                    i + 1
+                                );
+                            } else {
+                                log::info!(
+                                    "{}: Guard zone {} alarm cleared",
+                                    self.common.key,
+                                    i + 1
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             // Silently handled (no state to update)
             CommandId::AliveCheck
             | CommandId::Heartbeat
@@ -785,7 +812,9 @@ impl FurunoReportReceiver {
             | CommandId::ATFSettings
             | CommandId::AutoAcquire
             | CommandId::TuneIndicator
-            | CommandId::DRS4WHeartbeat => {}
+            | CommandId::DRS4WHeartbeat
+            | CommandId::GuardMode
+            | CommandId::GuardFan => {}
 
             _ => {
                 log::debug!(

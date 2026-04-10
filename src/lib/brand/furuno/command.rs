@@ -3,9 +3,11 @@ use std::fmt::Write;
 use tokio::io::{AsyncWriteExt, WriteHalf};
 use tokio::net::TcpStream;
 
+use std::f64::consts::TAU;
+
 use super::protocol::{
-    CommandId, CommandMode, WIRE_UNIT_KM, WIRE_UNIT_NM, meters_to_wire_index_for_unit,
-    wire_unit_for_meters,
+    CommandId, CommandMode, GUARD_MODE_FAN, GUARD_MODE_OFF, SPOKES, WIRE_UNIT_KM, WIRE_UNIT_NM,
+    meters_to_wire_index_for_unit, wire_unit_for_meters,
 };
 use crate::brand::CommandSender;
 use crate::radar::range::Ranges;
@@ -488,6 +490,58 @@ impl CommandSender for Command {
                 CommandId::TargetAnalyzer
             }
 
+            ControlId::GuardZone1 | ControlId::GuardZone2 => {
+                let zone_index: i32 = if cv.id == ControlId::GuardZone1 {
+                    0
+                } else {
+                    1
+                };
+
+                if let Some(zone) = controls.guard_zone(&cv.id) {
+                    if zone.enabled {
+                        let start_spoke = radians_to_spokes(zone.start_angle);
+                        let end_spoke = radians_to_spokes(zone.end_angle);
+                        // TODO: verify range unit empirically on hardware
+                        let inner_range = zone.start_distance as i32;
+                        let outer_range = zone.end_distance as i32;
+
+                        self.send(
+                            CommandMode::Set,
+                            CommandId::GuardFan,
+                            &[zone_index, start_spoke, end_spoke, inner_range, outer_range],
+                        )
+                        .await?;
+                        self.send(
+                            CommandMode::Set,
+                            CommandId::GuardMode,
+                            &[GUARD_MODE_FAN, 0, zone_index],
+                        )
+                        .await?;
+                    } else {
+                        self.send(
+                            CommandMode::Set,
+                            CommandId::GuardMode,
+                            &[GUARD_MODE_OFF, 0, zone_index],
+                        )
+                        .await?;
+                    }
+                } else {
+                    self.send(
+                        CommandMode::Set,
+                        CommandId::GuardMode,
+                        &[GUARD_MODE_OFF, 0, zone_index],
+                    )
+                    .await?;
+                }
+
+                log::info!(
+                    "{}: Guard zone {} sent to hardware",
+                    self.key,
+                    zone_index + 1
+                );
+                return Ok(());
+            }
+
             // Non-hardware settings
             _ => return Err(RadarError::CannotSetControlId(cv.id)),
         };
@@ -508,4 +562,9 @@ impl CommandSender for Command {
         }
         Ok(())
     }
+}
+
+/// Convert an angle in radians to Furuno spoke units (0–8191).
+fn radians_to_spokes(radians: f64) -> i32 {
+    ((radians / TAU * SPOKES as f64).round() as i32).rem_euclid(SPOKES as i32)
 }

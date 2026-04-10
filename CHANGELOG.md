@@ -11,6 +11,7 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 ### Added
 
 - Furuno pulse width display: shows current transmit pulse width (S1/S2/M1/M2/M3/L) as reported by the radar
+- Furuno hardware guard zone support: fan zone geometry is sent to the radar antenna processor when guard zones are configured in the GUI
 
 ### Fixed 
 
