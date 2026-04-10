@@ -10,6 +10,16 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 
 ### Added
 
+### Fixed 
+
+### Changed
+
+### Deleted
+
+## [3.4.2]
+
+### Added
+
 - Garmin per-model capability detection: controls are now gated on the radar's advertised capabilities — only features the radar actually supports are exposed. Model generation (xHD, xHD2, xHD3, Fantom, Fantom Pro) is auto-detected from capability bits when the factory name isn't available.
 - Garmin radar identification: the radar's factory model name and user-customizable alias are learned from the CDM protocol. Users can rename the radar from the mayara UI and the new name persists on the radar itself.
 - Garmin dual range support: radars that support it appear as two independent instances ("A" and "B") with their own gain, sea, rain, range, and doppler controls.
